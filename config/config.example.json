@@ -1,0 +1,42 @@
+{
+  "realtime": {
+    "allowDirectKeyFallback": false,
+    "authMode": "api-key",
+    "api_version": "2025-04-01-preview",
+    "apiKey": "",
+    "apiKeyEnv": "OPENAI_API_KEY",
+    "debug": false,
+    "deployment": "gpt-realtime-1",
+    "endpoint": "https://YOUR-RESOURCE.openai.azure.com",
+    "use_v1_path": true,
+    "fallback_patterns": true,
+    "max_response_output_tokens": 400,
+    "modalities": [
+      "text",
+      "audio"
+    ],
+    "model": "gpt-realtime-1",
+    "azure": {
+      "authScope": "https://cognitiveservices.azure.com/.default",
+      "managedIdentityClientId": ""
+    },
+    "provider": "azure",
+    "system_prompt": "你是一个专业的实时对讲助手，回答简洁准确。",
+    "temperature": 0.7,
+    "vad": {
+      "enabled": true,
+      "silence_ms": 600
+    },
+    "voice": "alloy",
+    "web_search": {
+      "enabled": false,
+      "type": "web_search",
+      "allowed_domains": [],
+      "user_location": null
+    }
+  },
+  "server": {
+    "clientOrigin": "http://localhost:3000",
+    "port": 3000
+  }
+}

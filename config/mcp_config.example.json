@@ -1,0 +1,11 @@
+{
+  "enabled": false,
+  "serverUrl": "",
+  "serverLabel": "",
+  "serverDescription": "",
+  "projectConnectionId": "",
+  "allowedTools": [],
+  "authorization": "",
+  "requireApproval": "default",
+  "headers": {}
+}
