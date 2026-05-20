@@ -36,14 +36,29 @@
         <small>用于日志展示和审批提示，如果留空则自动使用 URL。</small>
       </label>
       <label>
+        Server Description
+        <input id="serverDescription" placeholder="例如: map MCP server for location lookup" />
+        <small>可选。提供给模型的 MCP 服务说明。</small>
+      </label>
+      <label>
         MCP Server URL
         <input id="serverUrl" placeholder="https://your-mcp-server.example.com" required />
         <small>Realtime API 将通过此地址连接远程 MCP 服务。</small>
       </label>
       <label>
+        Project Connection ID
+        <input id="projectConnectionId" placeholder="例如: my-mcp-connection" />
+        <small>可选。Foundry Agent/Toolbox 使用项目连接做服务端鉴权时填写。</small>
+      </label>
+      <label>
         Authorization Header
         <input id="authorization" placeholder="例如: Bearer xxx 或 apikey xxx" />
         <small>可选。若 MCP 服务需要身份验证，请填完整的 Header 值。</small>
+      </label>
+      <label>
+        Allowed Tools
+        <textarea id="allowedTools" placeholder="tool_a, tool_b"></textarea>
+        <small>可选。逗号或换行分隔，用于限制可调用的 MCP 工具名。</small>
       </label>
       <label>
         Require Approval
@@ -57,7 +72,7 @@
       <label>
         自定义 Headers (JSON 或 key:value 每行)
         <textarea id="headers" placeholder='{"X-Org-Id":"123"}'></textarea>
-        <small>用于传递额外请求头，例如租户信息。<strong>Authorization</strong> 会与上方输入合并。</small>
+        <small>用于传递额外请求头，例如租户信息。鉴权请优先填写上方 Authorization Header。</small>
       </label>
       <label style="flex-direction:row; align-items:center; gap:0.5rem;">
         <input type="checkbox" id="enableTool" />

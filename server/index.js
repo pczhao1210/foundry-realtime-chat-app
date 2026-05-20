@@ -7,20 +7,43 @@ import compression from 'compression';
 import dotenv from 'dotenv';
 import fetch from 'node-fetch';
 import { DefaultAzureCredential } from '@azure/identity';
+import { WebSocket, WebSocketServer } from 'ws';
 
-dotenv.config();
+dotenv.config({ quiet:true });
 
 const rootDir = path.resolve();
 const cfgPath = path.join(rootDir,'config','config.json');
-const cfg = JSON.parse(fs.readFileSync(cfgPath,'utf-8'));
+const cfgExamplePath = path.join(rootDir,'config','config.example.json');
+function readJsonConfig(primaryPath, fallbackPath){
+  const sourcePath=fs.existsSync(primaryPath) ? primaryPath : fallbackPath;
+  if(sourcePath!==primaryPath){
+    console.warn(`[config] ${path.relative(rootDir, primaryPath)} not found; using ${path.relative(rootDir, fallbackPath)}. Copy the example file for local settings.`);
+  }
+  return JSON.parse(fs.readFileSync(sourcePath,'utf-8'));
+}
+const cfg = readJsonConfig(cfgPath, cfgExamplePath);
 const mcpCfgPath = path.join(rootDir,'config','mcp_config.json');
 const DEFAULT_AZURE_AUTH_SCOPE = 'https://cognitiveservices.azure.com/.default';
+const DEFAULT_SPEECH_STYLE_INSTRUCTIONS = '# 口音与语音风格\n中文回答时使用自然、清晰、稳定的标准普通话；四声和轻声自然，句尾语气按中文习惯收束。语速中等偏自然，按中文语义短语断句，不要逐词停顿。不要使用英语式重音、夸张播音腔或外国人腔。口音控制不改变回答语言；不要因为用户口音切换语言。';
 const REALTIME_MODEL_OPTIONS = Object.freeze([
   'gpt-realtime-1',
+  'gpt-realtime-1.5',
   'gpt-realtime-2',
+  'gpt-realtime-translate',
   'gpt-realtime-translation',
   'gpt-realtime-whisper'
 ]);
+const REALTIME_VOICE_OPTIONS = Object.freeze([
+  'alloy',
+  'ash',
+  'ballad',
+  'coral',
+  'echo',
+  'sage',
+  'shimmer',
+  'verse'
+]);
+const REALTIME_TASK_OPTIONS = Object.freeze(['conversation','transcription','translation']);
 let azureIdentityCredentialCache = { cacheKey:'', credential:null };
 
 function defaultMcpConfig(){
@@ -28,9 +51,21 @@ function defaultMcpConfig(){
     enabled:false,
     serverUrl:'',
     serverLabel:'',
+    serverDescription:'',
+    projectConnectionId:'',
+    allowedTools:[],
     authorization:'',
     requireApproval:'default',
     headers:{}
+  };
+}
+
+function defaultWebSearchConfig(){
+  return {
+    enabled:false,
+    type:'web_search',
+    allowed_domains:[],
+    user_location:null
   };
 }
 
@@ -48,7 +83,7 @@ function loadMcpConfig(){
   try{
     const raw=fs.readFileSync(mcpCfgPath,'utf-8');
     const parsed=JSON.parse(raw);
-    return { ...defaultMcpConfig(), ...parsed, headers: typeof parsed?.headers==='object' && !Array.isArray(parsed.headers) ? parsed.headers : {} };
+    return sanitizeMcpPayload({ ...defaultMcpConfig(), ...parsed, headers: typeof parsed?.headers==='object' && !Array.isArray(parsed.headers) ? parsed.headers : {} });
   }catch(err){
     console.warn('[mcp] Failed to load config, falling back to default', err.message);
     return defaultMcpConfig();
@@ -67,6 +102,37 @@ function sanitizeHeaders(input){
   return out;
 }
 
+function splitAuthorizationHeader(headers, authorization=''){
+  const cleanHeaders={};
+  let auth=(authorization||'').toString().trim();
+  Object.entries(headers||{}).forEach(([key,value])=>{
+    if(/^authorization$/i.test(key)){
+      if(!auth) auth=String(value||'').trim();
+      return;
+    }
+    cleanHeaders[key]=value;
+  });
+  return { authorization:auth, headers:cleanHeaders };
+}
+
+function stringifyForLog(value){
+  try{
+    return JSON.stringify(value,(key,val)=>{
+      if(/authorization|api[-_]?key|access[_-]?token|client[_-]?secret|secret|password/i.test(key)) return val ? '[redacted]' : val;
+      if(typeof val==='string' && /^Bearer\s+/i.test(val)) return 'Bearer [redacted]';
+      return val;
+    });
+  }catch(_){
+    return '[unserializable]';
+  }
+}
+
+function sanitizeStringList(input){
+  if(Array.isArray(input)) return input.map(v=>String(v).trim()).filter(Boolean);
+  if(typeof input==='string') return input.split(/[,;\n]+/).map(v=>v.trim()).filter(Boolean);
+  return [];
+}
+
 function normalizeRequireApproval(val){
   const allowed=['default','never','always'];
   if(!val) return 'default';
@@ -81,19 +147,63 @@ function sanitizeMcpPayload(payload){
   const enabled=Boolean(payload.enabled);
   const serverUrl=(payload.serverUrl??'').toString().trim();
   const serverLabel=(payload.serverLabel??'').toString().trim();
+  const serverDescription=(payload.serverDescription??'').toString().trim();
+  const projectConnectionId=(payload.projectConnectionId??'').toString().trim();
+  const allowedTools=sanitizeStringList(payload.allowedTools);
   const authorization=(payload.authorization??'').toString().trim();
   const requireApproval=normalizeRequireApproval(payload.requireApproval);
-  const headers=sanitizeHeaders(payload.headers);
-  if(authorization){ headers.Authorization = authorization; }
+  const { authorization:normalizedAuthorization, headers }=splitAuthorizationHeader(sanitizeHeaders(payload.headers), authorization);
   const result={
     enabled: enabled && !!serverUrl,
     serverUrl,
     serverLabel,
-    authorization,
+    serverDescription,
+    projectConnectionId,
+    allowedTools,
+    authorization:normalizedAuthorization,
     requireApproval,
     headers
   };
   return result;
+}
+
+function normalizeHostedToolType(value){
+  const type=String(value||'web_search').trim();
+  if(type==='web_search' || type==='web_search_preview') return type;
+  return 'web_search';
+}
+
+function getWebSearchConfig(){
+  const raw=cfg.realtime?.web_search || cfg.realtime?.webSearch || {};
+  const base=defaultWebSearchConfig();
+  if(!raw || typeof raw!=='object' || Array.isArray(raw)) return base;
+  const userLocation=raw.user_location && typeof raw.user_location==='object' && !Array.isArray(raw.user_location) ? raw.user_location : null;
+  const normalizedLocation=userLocation ? {
+    type:'approximate',
+    country:String(userLocation.country||'').trim(),
+    city:String(userLocation.city||'').trim(),
+    region:String(userLocation.region||'').trim(),
+    timezone:String(userLocation.timezone||'').trim()
+  } : null;
+  return {
+    enabled:Boolean(raw.enabled),
+    type:normalizeHostedToolType(raw.type),
+    allowed_domains:sanitizeStringList(raw.allowed_domains || raw.allowedDomains),
+    user_location: normalizedLocation && Object.keys(normalizedLocation).length>1 ? normalizedLocation : null
+  };
+}
+
+function buildWebSearchTool(){
+  const ws=getWebSearchConfig();
+  if(!ws.enabled) return undefined;
+  const tool={ type:ws.type };
+  if(ws.allowed_domains.length) tool.filters={ allowed_domains:ws.allowed_domains };
+  if(ws.user_location){
+    const loc={ type:'approximate' };
+    ['country','city','region','timezone'].forEach(key=>{ if(ws.user_location[key]) loc[key]=ws.user_location[key]; });
+    tool.user_location=loc;
+  }
+  return tool;
 }
 
 function persistMcpConfig(newCfg){
@@ -132,6 +242,54 @@ function getRequestedRealtimeModel(req){
   const raw=req.query.model ?? req.query.deployment;
   if(raw===undefined || raw===null || String(raw).trim()==='') return getRealtimeModelName();
   return validateRealtimeModelName(String(raw));
+}
+
+function normalizeRealtimeTask(value){
+  const task=typeof value==='string' ? value.trim().toLowerCase() : '';
+  return REALTIME_TASK_OPTIONS.includes(task) ? task : 'conversation';
+}
+
+function getRequestedRealtimeTask(req){
+  return normalizeRealtimeTask(req.query.task);
+}
+
+function realtimeTaskUsesVoice(task){
+  return normalizeRealtimeTask(task)!=='transcription';
+}
+
+function realtimeTaskRequiresGa(task){
+  return normalizeRealtimeTask(task)!=='conversation';
+}
+
+function normalizeRealtimeVoiceName(value){
+  return typeof value==='string' ? value.trim().toLowerCase() : '';
+}
+
+function getRealtimeVoiceName(){
+  return normalizeRealtimeVoiceName(cfg.realtime?.voice || '');
+}
+
+function getRealtimeVoiceOptions(){
+  const options=[...REALTIME_VOICE_OPTIONS];
+  const configured=getRealtimeVoiceName();
+  if(configured && !options.includes(configured)) options.unshift(configured);
+  return options;
+}
+
+function validateRealtimeVoiceName(value){
+  const voice=normalizeRealtimeVoiceName(value);
+  if(!voice) return '';
+  const allowed=getRealtimeVoiceOptions();
+  if(!allowed.includes(voice)){
+    throw new Error(`Invalid realtime voice "${voice}". Allowed values: ${allowed.join(', ')}`);
+  }
+  return voice;
+}
+
+function getRequestedRealtimeVoice(req){
+  const raw=req.query.voice;
+  if(raw===undefined || raw===null || String(raw).trim()==='') return getRealtimeVoiceName();
+  return validateRealtimeVoiceName(String(raw));
 }
 
 function getAzureConfig(){
@@ -234,6 +392,11 @@ async function validateRealtimeAuth(){
   const env=process.env;
   const map=[['RT_PROVIDER','provider'],['RT_MODEL','model'],['RT_DEPLOYMENT','deployment'],['RT_ENDPOINT','endpoint'],['RT_API_VERSION','api_version'],['RT_KEY_ENV','apiKeyEnv'],['RT_AUTH_MODE','authMode'],['RT_VOICE','voice'],['RT_SYSTEM_PROMPT','system_prompt']];
   map.forEach(([k,f])=>{ if(env[k]) rt[f]=env[k]; });
+  if(env.RT_WEB_SEARCH || env.RT_WEB_SEARCH_ALLOWED_DOMAINS){
+    const webSearch = rt.web_search && typeof rt.web_search==='object' && !Array.isArray(rt.web_search) ? rt.web_search : (rt.web_search={});
+    if(env.RT_WEB_SEARCH) webSearch.enabled=/^(1|true|yes|on)$/i.test(env.RT_WEB_SEARCH);
+    if(env.RT_WEB_SEARCH_ALLOWED_DOMAINS) webSearch.allowed_domains=sanitizeStringList(env.RT_WEB_SEARCH_ALLOWED_DOMAINS);
+  }
   if(env.RT_AZURE_CLIENT_ID || env.RT_AZURE_AUTH_SCOPE){
     const azure = rt.azure && typeof rt.azure==='object' && !Array.isArray(rt.azure) ? rt.azure : (rt.azure={});
     if(env.RT_AZURE_CLIENT_ID) azure.managedIdentityClientId=env.RT_AZURE_CLIENT_ID;
@@ -255,17 +418,77 @@ function buildMcpTools(){
   if(!mcpConfig?.enabled || !mcpConfig.serverUrl) return undefined;
   const tool={ type:'mcp', server_url:mcpConfig.serverUrl };
   if(mcpConfig.serverLabel) tool.server_label=mcpConfig.serverLabel;
-  // 避免同时出现 authorization 参数与 Authorization header 冲突，统一只用 headers.Authorization
-  if(mcpConfig.authorization){
-    tool.headers = tool.headers || {};
-    if(!tool.headers.Authorization) tool.headers.Authorization = mcpConfig.authorization;
-  }
+  if(mcpConfig.serverDescription) tool.server_description=mcpConfig.serverDescription;
+  if(mcpConfig.projectConnectionId) tool.project_connection_id=mcpConfig.projectConnectionId;
+  if(Array.isArray(mcpConfig.allowedTools) && mcpConfig.allowedTools.length) tool.allowed_tools=mcpConfig.allowedTools;
   if(mcpConfig.requireApproval && mcpConfig.requireApproval!=='default') tool.require_approval=mcpConfig.requireApproval;
-  if(mcpConfig.headers && Object.keys(mcpConfig.headers).length) tool.headers=mcpConfig.headers;
+  const { authorization, headers }=splitAuthorizationHeader(sanitizeHeaders(mcpConfig.headers), mcpConfig.authorization);
+  if(authorization){
+    if(isAzure()) headers.Authorization=authorization;
+    else tool.authorization=authorization;
+  }
+  if(Object.keys(headers).length) tool.headers=headers;
   return [tool];
 }
 
-function buildBody(modelOverride){ const b={ model:normalizeRealtimeModelName(modelOverride)||getRealtimeModelName(), voice:cfg.realtime.voice, modalities:cfg.realtime.modalities, temperature:cfg.realtime.temperature, max_response_output_tokens:cfg.realtime.max_response_output_tokens, instructions:cfg.realtime.system_prompt }; if(!b.model) delete b.model; return b; }
+function buildRealtimeTools(){
+  const tools=[];
+  const webSearchTool=buildWebSearchTool();
+  if(webSearchTool) tools.push(webSearchTool);
+  const mcpTools=buildMcpTools();
+  if(mcpTools) tools.push(...mcpTools);
+  return tools.length ? tools : undefined;
+}
+
+function buildToolUseInstructions(){
+  const tools=buildRealtimeTools();
+  if(!tools?.length) return '';
+  const hasMcp=tools.some(tool=>tool.type==='mcp');
+  const hasWebSearch=tools.some(tool=>/^web_search/.test(tool.type||''));
+  const lines=['工具使用规则: 只能使用当前会话 tools 中实际提供的工具，不要臆造、假装或模拟工具结果。'];
+  if(hasMcp) lines.push('对于天气、地图、地理位置、路线、POI、实时状态等需要外部数据的查询，如果信息足够明确，应优先调用可用的 MCP 工具；缺少城市或地点时先追问。');
+  if(hasWebSearch) lines.push('对于最新信息、网页事实或需要联网核验的问题，应使用 web_search 工具后再回答。');
+  lines.push('工具调用失败时，简要说明无法获取实时数据，不要用训练知识编造当前天气、降雨概率或未来预报。');
+  return lines.join('\n');
+}
+
+function mergeInstructions(base, extra){
+  const normalizedBase=(base||'').toString().trim();
+  const normalizedExtra=(extra||'').toString().trim();
+  if(!normalizedExtra) return normalizedBase;
+  return normalizedBase ? `${normalizedBase}\n\n${normalizedExtra}` : normalizedExtra;
+}
+function getSpeechStyleInstructions(){ const realtime=cfg.realtime||{}; const value=Object.prototype.hasOwnProperty.call(realtime,'speech_style_instructions') ? realtime.speech_style_instructions : DEFAULT_SPEECH_STYLE_INSTRUCTIONS; return (value||'').toString().trim(); }
+function buildConversationInstructions(extra=''){ return mergeInstructions(mergeInstructions(cfg.realtime?.system_prompt, getSpeechStyleInstructions()), extra); }
+
+function buildBody(modelOverride, voiceOverride, { includeVoice=true }={}){ const b={ model:normalizeRealtimeModelName(modelOverride)||getRealtimeModelName(), modalities:cfg.realtime.modalities, temperature:cfg.realtime.temperature, max_response_output_tokens:cfg.realtime.max_response_output_tokens, instructions:buildConversationInstructions() }; if(includeVoice) b.voice=normalizeRealtimeVoiceName(voiceOverride)||getRealtimeVoiceName(); if(!b.model) delete b.model; if(!b.voice) delete b.voice; if(!b.instructions) delete b.instructions; return b; }
+function normalizeLanguageCode(value){ const lang=typeof value==='string' ? value.trim() : ''; return lang && lang.toLowerCase()!=='auto' ? lang : ''; }
+function getRequestedInputLanguage(req){ return normalizeLanguageCode(req.query.input_language || req.query.inputLanguage); }
+function getRequestedTargetLanguage(req){ return normalizeLanguageCode(req.query.target_language || req.query.targetLanguage) || 'en'; }
+function getTranslationTranscriptionModel(){ return normalizeRealtimeModelName(cfg.realtime?.translation_transcription_model || cfg.realtime?.translationTranscriptionModel || cfg.realtime?.transcription_model || cfg.realtime?.transcriptionModel || 'gpt-realtime-whisper') || 'gpt-realtime-whisper'; }
+function buildTranslationInputTranscription(inputLanguage){ const transcription={ model:getTranslationTranscriptionModel() }; if(inputLanguage && !isAzure()) transcription.language=inputLanguage; return transcription; }
+function buildGaClientSecretEndpoint(task){ const base=(cfg.realtime?.endpoint||'').replace(/\/$/,''); if(!base) throw new Error('Missing realtime endpoint'); return base + (normalizeRealtimeTask(task)==='translation' ? '/openai/v1/realtime/translations/client_secrets' : '/openai/v1/realtime/client_secrets'); }
+function buildGaClientSecretBody(task, modelOverride, voiceOverride, req){
+  const requestedTask=normalizeRealtimeTask(task);
+  const model=normalizeRealtimeModelName(modelOverride)||getRealtimeModelName();
+  const inputLanguage=getRequestedInputLanguage(req);
+  if(requestedTask==='transcription'){
+    const transcription={ model };
+    if(inputLanguage) transcription.language=inputLanguage;
+    return { session:{ type:'transcription', audio:{ input:{ format:{ type:'audio/pcm', rate:24000 }, transcription, turn_detection:null } } } };
+  }
+  if(requestedTask==='translation'){
+    return { session:{ model, audio:{ input:{ transcription:buildTranslationInputTranscription(inputLanguage) }, output:{ language:getRequestedTargetLanguage(req) } } } };
+  }
+  const session={ type:'realtime', model };
+  const instructions=buildConversationInstructions(buildToolUseInstructions());
+  if(instructions) session.instructions=instructions;
+  const voice=normalizeRealtimeVoiceName(voiceOverride)||getRealtimeVoiceName();
+  if(voice) session.audio={ output:{ voice } };
+  const tools=buildRealtimeTools();
+  if(tools?.length){ session.tools=tools; session.tool_choice='auto'; }
+  return { session };
+}
 function resolveEndpoint(){
   const r=cfg.realtime||{};
   let ep=(r.endpoint||'').replace(/\/$/,'');
@@ -292,7 +515,78 @@ function resolveEndpoint(){
   }
   return ep + '/sessions';
 }
-function buildAuthHeaders(authContext){ const headers={ 'Content-Type':'application/json','Accept':'application/json','OpenAI-Beta':'realtime=v1' }; if(authContext.provider==='azure' && authContext.authMode==='api-key') headers['api-key']=authContext.credential; else headers.Authorization=`Bearer ${authContext.credential}`; return headers; }
+function buildAuthHeaders(authContext,{ useGa=false }={}){ const headers={ 'Content-Type':'application/json','Accept':'application/json' }; if(!useGa) headers['OpenAI-Beta']='realtime=v1'; if(authContext.provider==='azure' && authContext.authMode==='api-key') headers['api-key']=authContext.credential; else headers.Authorization=`Bearer ${authContext.credential}`; return headers; }
+function buildWebSocketAuthHeaders(authContext,{ useGa=false }={}){ const headers={}; if(!useGa) headers['OpenAI-Beta']='realtime=v1'; if(authContext.provider==='azure' && authContext.authMode==='api-key') headers['api-key']=authContext.credential; else headers.Authorization=`Bearer ${authContext.credential}`; return headers; }
+
+function parseUseV1Flag(value){
+  if(value==='1' || /^true$/i.test(value||'')) return true;
+  if(value==='0' || /^false$/i.test(value||'')) return false;
+  return Boolean(cfg.realtime?.use_v1_path || process.env.RT_USE_V1_PATH==='1' || /^(true|yes)$/i.test(process.env.RT_USE_V1_PATH||''));
+}
+
+function resolveRealtimeWebSocketEndpoint(model, useV1, task='conversation'){
+  const r=cfg.realtime||{};
+  const requestedTask=normalizeRealtimeTask(task);
+  const deployment=validateRealtimeModelName(model || getRealtimeModelName());
+  if(!deployment) throw new Error('Missing realtime model/deployment');
+  let base=(r.endpoint||'').replace(/\/$/,'');
+  if(!base) throw new Error('Missing realtime endpoint');
+  base=base.replace(/^http:/,'ws:').replace(/^https:/,'wss:');
+  if(isAzure()){
+    if(requestedTask==='translation') return { url:base + '/openai/v1/realtime/translations?model=' + encodeURIComponent(deployment), deployment, pathVariant:'translation-ga' };
+    if(useV1 || realtimeTaskRequiresGa(requestedTask)) return { url:base + '/openai/v1/realtime?model=' + encodeURIComponent(deployment), deployment, pathVariant:requestedTask==='transcription'?'transcription-ga':'ga' };
+    const apiVersion=(r.api_version || r.apiVersion || '2025-04-01-preview').trim();
+    return { url:base + '/openai/realtime?api-version=' + encodeURIComponent(apiVersion) + '&deployment=' + encodeURIComponent(deployment), deployment, pathVariant:'preview' };
+  }
+  if(!/\/v1\b/.test(base)) base += '/v1';
+  if(requestedTask==='translation') return { url:base + '/realtime/translations?model=' + encodeURIComponent(deployment), deployment, pathVariant:'translation' };
+  return { url:base + '/realtime?model=' + encodeURIComponent(deployment), deployment, pathVariant:'openai' };
+}
+
+function closePair(a,b,code=1000,reason='proxy-close'){
+  [a,b].forEach(ws=>{
+    if(ws && ws.readyState!==WebSocket.CLOSED && ws.readyState!==WebSocket.CLOSING){
+      try{ ws.close(code, reason); }catch(_){ }
+    }
+  });
+}
+
+async function connectRealtimeProxy(clientWs, req, url){
+  const model=url.searchParams.get('model') || '';
+  const task=getRequestedRealtimeTask({ query:{ task:url.searchParams.get('task')||'conversation' } });
+  const useV1=realtimeTaskRequiresGa(task) || parseUseV1Flag(url.searchParams.get('use_v1'));
+  let upstream;
+  const pending=[];
+  try{
+    const authContext=await resolveAuthContext();
+    const endpoint=resolveRealtimeWebSocketEndpoint(model, useV1, task);
+    console.log(`[realtime-proxy] upstream connect path=${endpoint.pathVariant} auth=${authContext.authMode} deployment=${endpoint.deployment}`);
+    upstream=new WebSocket(endpoint.url, ['realtime'], { headers:buildWebSocketAuthHeaders(authContext,{ useGa:endpoint.pathVariant!=='preview' }) });
+    clientWs.on('message',(data,isBinary)=>{
+      if(upstream.readyState===WebSocket.OPEN) upstream.send(data,{ binary:isBinary });
+      else if(upstream.readyState===WebSocket.CONNECTING) pending.push([data,isBinary]);
+    });
+    upstream.on('open',()=>{
+      while(pending.length){ const [data,isBinary]=pending.shift(); upstream.send(data,{ binary:isBinary }); }
+    });
+    upstream.on('message',(data,isBinary)=>{ if(clientWs.readyState===WebSocket.OPEN) clientWs.send(data,{ binary:isBinary }); });
+    upstream.on('unexpected-response',(_request,response)=>{
+      let body='';
+      response.on('data',chunk=>{ body+=chunk.toString(); if(body.length>1200) body=body.slice(0,1200); });
+      response.on('end',()=>{
+        console.error('[realtime-proxy] upstream unexpected response', response.statusCode, response.statusMessage, body.slice(0,800));
+        closePair(clientWs,upstream,1011,'upstream-unexpected-response');
+      });
+    });
+    upstream.on('close',(code,buffer)=>{ const reason=buffer?.toString?.()||'upstream-close'; console.warn(`[realtime-proxy] upstream closed code=${code} reason=${reason}`); closePair(clientWs,null,code||1011,reason.slice(0,120)); });
+    upstream.on('error',err=>{ console.error('[realtime-proxy] upstream error', err.message); closePair(clientWs,upstream,1011,'upstream-error'); });
+    clientWs.on('close',(code,buffer)=>{ const reason=buffer?.toString?.()||'client-close'; closePair(upstream,null,code||1000,reason.slice(0,120)); });
+    clientWs.on('error',()=>{ closePair(upstream,null,1011,'client-error'); });
+  }catch(err){
+    console.error('[realtime-proxy] failed to start', err.message);
+    closePair(clientWs,upstream,1011,'proxy-start-failed');
+  }
+}
 
 const app = express();
 app.use(cors({ origin: cfg.server?.clientOrigin || '*' }));
@@ -310,10 +604,13 @@ app.get('/api/realtime-config', (req,res)=>{
     deployment:r.deployment,
     model_options:getRealtimeModelOptions(),
     voice:r.voice,
+    voice_options:getRealtimeVoiceOptions(),
     temperature:r.temperature,
     max_response_output_tokens:r.max_response_output_tokens,
     system_prompt:r.system_prompt,
+    speech_style_instructions:getSpeechStyleInstructions(),
     modalities:r.modalities,
+    web_search:getWebSearchConfig(),
     // input_audio_transcription removed
     vad: r.vad ? { enabled:r.vad.enabled, silence_ms:r.vad.silence_ms } : null,
     endpoint: r.endpoint,
@@ -371,16 +668,73 @@ app.get('/api/realtime-ws-key', (req,res)=>{
 
 app.get('/api/realtime-session', async (req,res)=>{
   let requestedModel;
+  let requestedVoice;
+  const requestedTask=getRequestedRealtimeTask(req);
+  const requestedMode=String(req.query.mode||'webrtc').toLowerCase();
   try{
     requestedModel=getRequestedRealtimeModel(req);
+    requestedVoice=realtimeTaskUsesVoice(requestedTask) ? getRequestedRealtimeVoice(req) : '';
   }catch(err){
-    return res.status(400).json({ error:'Invalid realtime model/deployment', detail:err.message, allowed_models:getRealtimeModelOptions() });
+    return res.status(400).json({ error:'Invalid realtime session option', detail:err.message, allowed_models:getRealtimeModelOptions(), allowed_voices:getRealtimeVoiceOptions(), allowed_tasks:REALTIME_TASK_OPTIONS });
   }
   let authContext;
   try{
     authContext=await resolveAuthContext();
   }catch(err){
     return res.status(500).json({ error:'Failed to resolve realtime credentials', detail:err.message, auth_mode:isAzure()?getAzureAuthMode():'api-key' });
+  }
+  const requestedUseV1=realtimeTaskRequiresGa(requestedTask) || parseUseV1Flag(req.query.use_v1);
+  if(requestedMode==='ws' || requestedMode==='websocket'){
+    const data={
+      provider:cfg.realtime.provider||'unknown',
+      auth_mode_resolved:authContext.authMode,
+      endpoint:cfg.realtime.endpoint,
+      api_version:cfg.realtime.api_version || cfg.realtime.apiVersion,
+      deployment:requestedModel || cfg.realtime.deployment || getRealtimeModelName(),
+      model:requestedModel || getRealtimeModelName(),
+      task:requestedTask,
+      use_v1_path_resolved:requestedUseV1,
+      path_variant:requestedTask==='translation'?'translation-ga':(requestedTask==='transcription'?'transcription-ga':(requestedUseV1?'ga':'preview')),
+      resolved_session_endpoint:null
+    };
+    if(realtimeTaskUsesVoice(requestedTask)) data.voice=requestedVoice || getRealtimeVoiceName();
+    return res.json(data);
+  }
+  if(isAzure() && requestedUseV1){
+    let endpoint;
+    let body;
+    try{
+      endpoint=buildGaClientSecretEndpoint(requestedTask);
+      body=buildGaClientSecretBody(requestedTask, requestedModel, requestedVoice, req);
+    }catch(err){
+      return res.status(400).json({ error:'Invalid realtime session option', detail:err.message, allowed_models:getRealtimeModelOptions(), allowed_voices:getRealtimeVoiceOptions(), allowed_tasks:REALTIME_TASK_OPTIONS });
+    }
+    try{
+      if(cfg.realtime.debug) console.log('[realtime] Creating GA client secret ->', endpoint, stringifyForLog(body));
+      const resp=await fetch(endpoint,{ method:'POST', headers:buildAuthHeaders(authContext,{ useGa:true }), body:JSON.stringify(body) });
+      const text=await resp.text();
+      if(!resp.ok){
+        console.error('[realtime] Client secret creation failed', resp.status, text.slice(0,400));
+        let hint=''; if(requestedTask==='translation' && /token authentication/i.test(text)) hint=' (Azure 当前对 realtime translations client_secrets 拒绝 Entra/managed identity token auth；如需浏览器 WebRTC 翻译，可尝试 RT_AUTH_MODE=api-key 生成临时 client secret)'; else if(resp.status===404) hint=' (检查 GA endpoint / 部署名称 / translation endpoint)'; else if(resp.status===401||resp.status===403) hint=authContext.provider==='azure' && authContext.authMode==='managed-identity' ? ' (检查 managed identity/Entra 令牌、角色分配与模型权限)' : ' (检查 API Key 权限与模型)';
+        return res.status(500).json({ error:'Client secret create failed', status:resp.status, detail:text, hint });
+      }
+      let data; try{ data=JSON.parse(text); }catch(_){ return res.status(500).json({ error:'Invalid JSON in client secret response', raw:text }); }
+      if(data && data.value && !data.client_secret) data.client_secret={ value:data.value };
+      if(data && !data.provider) data.provider=cfg.realtime.provider||'unknown';
+      if(data) data.auth_mode_resolved=authContext.authMode;
+      if(data) data.use_v1_path_resolved=true;
+      if(data) data.resolved_session_endpoint=endpoint;
+      if(data) data.path_variant=requestedTask==='translation'?'translation-ga':'ga';
+      if(data && !data.endpoint) data.endpoint=cfg.realtime.endpoint;
+      if(data && !data.deployment) data.deployment=requestedModel || cfg.realtime.deployment || getRealtimeModelName();
+      if(data && !data.model) data.model=requestedModel || getRealtimeModelName();
+      if(data) data.task=requestedTask;
+      if(data && realtimeTaskUsesVoice(requestedTask) && !data.voice) data.voice=requestedVoice || getRealtimeVoiceName();
+      return res.json(data);
+    }catch(e){
+      console.error('[realtime] Exception creating client secret', e);
+      return res.status(500).json({ error:'Failed to create realtime client secret', detail:e.message });
+    }
   }
   // Allow runtime override for GA path (?use_v1=1 or 0)
   const prev = cfg.realtime.use_v1_path;
@@ -392,12 +746,12 @@ app.get('/api/realtime-session', async (req,res)=>{
   // Restore previous flag after building endpoint (avoid persistent mutation)
   cfg.realtime.use_v1_path=prev;
   if(cfg.realtime.debug){ console.log('[realtime] resolved REST session endpoint (https) ->', endpoint); }
-  const body = buildBody(requestedModel);
+  const body = buildBody(requestedModel, requestedVoice, { includeVoice:realtimeTaskUsesVoice(requestedTask) });
   try {
-    console.log('[realtime] session.create payload:', JSON.stringify(body));
+    console.log('[realtime] session.create payload:', stringifyForLog(body));
   } catch (_){ console.log('[realtime] session.create payload (non-serializable)'); }
   try {
-  if(cfg.realtime.debug) console.log('[realtime] Creating REST session POST ->', endpoint, body);
+  if(cfg.realtime.debug) console.log('[realtime] Creating REST session POST ->', endpoint, stringifyForLog(body));
     // If GA variant and contains api-version preview param, optionally strip to test GA without preview
     let firstEndpoint = endpoint;
     if(attemptedVariant==='ga'){
@@ -413,7 +767,7 @@ app.get('/api/realtime-session', async (req,res)=>{
       // Build preview path explicitly
       const r=cfg.realtime; const base=(r.endpoint||'').replace(/\/$/,''); const av=r.api_version||r.apiVersion; let previewEp=base+'/openai/realtimeapi/sessions'; if(av && !/[?&]api-version=/.test(previewEp)) previewEp+=(previewEp.includes('?')?'&':'?')+'api-version='+encodeURIComponent(av);
       endpoint=previewEp; attemptedVariant='preview-fallback';
-      if(cfg.realtime.debug) console.log('[realtime] Creating session (fallback) ->', endpoint, body);
+      if(cfg.realtime.debug) console.log('[realtime] Creating session (fallback) ->', endpoint, stringifyForLog(body));
       resp = await fetch(endpoint,{ method:'POST', headers:buildAuthHeaders(authContext), body: JSON.stringify(body)});
       text = await resp.text();
     }
@@ -435,6 +789,8 @@ app.get('/api/realtime-session', async (req,res)=>{
   if(data && !data.api_version && !data.apiVersion) data.api_version = cfg.realtime.api_version || cfg.realtime.apiVersion;
   if(data && !data.deployment) data.deployment = requestedModel || cfg.realtime.deployment || getRealtimeModelName();
   if(data && !data.model) data.model = requestedModel || getRealtimeModelName();
+  if(data) data.task = requestedTask;
+  if(data && realtimeTaskUsesVoice(requestedTask) && !data.voice) data.voice = requestedVoice || getRealtimeVoiceName();
   if(isAzure() && !data?.client_secret?.value){ data._diagnostics={ note:'Azure session returned no client_secret; verify deployment supports realtime + api-version', keys:Object.keys(data)}; }
   res.json(data);
   } catch(e){
@@ -445,6 +801,19 @@ app.get('/api/realtime-session', async (req,res)=>{
 
 const port = cfg.server?.port || 3000;
 const server = app.listen(port, ()=>{ console.log(`[realtime] Server listening on :${port}`); });
+const realtimeProxyWss = new WebSocketServer({ noServer:true });
+server.on('upgrade',(req,socket,head)=>{
+  let url;
+  try{ url=new URL(req.url,'http://localhost'); }catch(_){ socket.destroy(); return; }
+  if(url.pathname!=='/realtime-proxy'){
+    socket.destroy();
+    return;
+  }
+  realtimeProxyWss.handleUpgrade(req,socket,head,ws=>{
+    realtimeProxyWss.emit('connection',ws,req,url);
+  });
+});
+realtimeProxyWss.on('connection',(ws,req,url)=>{ connectRealtimeProxy(ws,req,url); });
 
 let shutting=false; function shutdown(sig){ if(shutting) return; shutting=true; console.log(`\n[realtime] Received ${sig}, shutting down...`); try{ server.close(()=>{ console.log('[realtime] HTTP server closed'); process.exit(0); }); setTimeout(()=>{ console.warn('[realtime] Force exit after timeout'); process.exit(0); },3000).unref(); }catch(e){ console.error('[realtime] Error during shutdown', e); process.exit(1);} }
 ['SIGINT','SIGTERM'].forEach(sig=>process.on(sig,()=>shutdown(sig)));

@@ -31,6 +31,8 @@ show_help() {
   --temperature <float>
   --max-tokens <int>
   --system-prompt <text>
+  --web-search <true|false> 启用 Foundry/OpenAI 原生 web_search tool
+  --web-search-domains <d>  逗号分隔的 allowed_domains
   --port <number>          覆盖 server.port
   --debug <true|false>
   --force-kill           若端口被占用，直接强制结束占用进程 (fallback)
@@ -39,7 +41,8 @@ show_help() {
 也可通过环境变量：
   RT_PROVIDER, RT_AUTH_MODE, RT_MODEL, RT_DEPLOYMENT, RT_ENDPOINT, RT_API_VERSION, RT_KEY_ENV,
   RT_AZURE_CLIENT_ID, RT_AZURE_AUTH_SCOPE, RT_VOICE, RT_MODALITIES,
-  RT_TEMPERATURE, RT_MAX_TOKENS, RT_SYSTEM_PROMPT, RT_PORT, RT_DEBUG
+  RT_TEMPERATURE, RT_MAX_TOKENS, RT_SYSTEM_PROMPT, RT_WEB_SEARCH, RT_WEB_SEARCH_ALLOWED_DOMAINS,
+  RT_PORT, RT_DEBUG
 
 示例：
   RT_MODEL=gpt-realtime-1 RT_TEMPERATURE=0.4 ./start.sh
@@ -65,6 +68,8 @@ while [[ $# -gt 0 ]]; do
     --temperature)    export RT_TEMPERATURE="$2"; shift 2;;
     --max-tokens)     export RT_MAX_TOKENS="$2"; shift 2;;
     --system-prompt)  export RT_SYSTEM_PROMPT="$2"; shift 2;;
+    --web-search)     export RT_WEB_SEARCH="$2"; shift 2;;
+    --web-search-domains) export RT_WEB_SEARCH_ALLOWED_DOMAINS="$2"; shift 2;;
     --port)           export RT_PORT="$2"; shift 2;;
     --debug)          export RT_DEBUG="$2"; shift 2;;
   --force-kill)     export RT_FORCE_KILL=1; shift 1;;
@@ -90,7 +95,11 @@ if [ ! -d node_modules ]; then
 fi
 
 # 必须的 API Key 环境变量存在性提示（使用 RT_KEY_ENV 或默认 OPENAI_API_KEY）
-AUTH_MODE_RAW="${RT_AUTH_MODE:-api-key}"
+CONFIG_AUTH_MODE=""
+if [ -f config/config.json ] && command -v node >/dev/null 2>&1; then
+  CONFIG_AUTH_MODE=$(node --input-type=module -e 'import fs from "fs"; try { const cfg=JSON.parse(fs.readFileSync("config/config.json","utf8")); process.stdout.write(String(cfg.realtime?.authMode || "")); } catch (_) {}')
+fi
+AUTH_MODE_RAW="${RT_AUTH_MODE:-${CONFIG_AUTH_MODE:-api-key}}"
 case "$(printf '%s' "$AUTH_MODE_RAW" | tr '[:upper:]' '[:lower:]')" in
   managed-identity|managed_identity|msi|entra) AUTH_MODE="managed-identity";;
   *) AUTH_MODE="api-key";;
