@@ -504,11 +504,11 @@ function buildMcpTools(){
     const tool={ type:'mcp', server_url:server.serverUrl };
     const serverLabel=(server.serverLabel || server.name || server.serverUrl || '').toString().trim();
     if(serverLabel) tool.server_label=serverLabel;
+    if(server.requireApproval && server.requireApproval!=='default') tool.require_approval=server.requireApproval;
     if(!isAzure()){
       if(server.serverDescription) tool.server_description=server.serverDescription;
       if(server.projectConnectionId) tool.project_connection_id=server.projectConnectionId;
       if(Array.isArray(server.allowedTools) && server.allowedTools.length) tool.allowed_tools=server.allowedTools;
-      if(server.requireApproval && server.requireApproval!=='default') tool.require_approval=server.requireApproval;
     }
     const { authorization, headers }=splitAuthorizationHeader(sanitizeHeaders(server.headers), server.authorization);
     if(authorization){

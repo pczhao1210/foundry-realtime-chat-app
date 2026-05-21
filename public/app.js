@@ -164,7 +164,7 @@ function splitAuthorizationHeader(headers, authorization=''){
 function normalizeHostedToolType(value){ const type=(value||'web_search').toString().trim(); return (type==='web_search'||type==='web_search_preview')? type : 'web_search'; }
 function mcpUsesHeaderAuthorization(){ const provider=(window._cfg?.provider||sessionInfo?.provider||'').toString().toLowerCase(); const endpoint=sessionInfo?.endpoint || window._cfg?.endpoint || ''; return provider==='azure' || /\.azure\.com/i.test(endpoint); }
 function buildNativeWebSearchToolPayload(){ const enabled=!!enableNativeWebSearchInput?.checked; if(!enabled) return null; const cfg=webSearchConfig||{}; const tool={ type:normalizeHostedToolType(cfg.type) }; const allowed=sanitizeList(cfg.allowed_domains||cfg.allowedDomains); if(allowed.length) tool.filters={ allowed_domains:allowed }; const loc=cfg.user_location; if(loc && typeof loc==='object' && !Array.isArray(loc)){ const userLocation={ type:'approximate' }; ['country','city','region','timezone'].forEach(key=>{ const value=(loc[key]||'').toString().trim(); if(value) userLocation[key]=value; }); if(Object.keys(userLocation).length>1) tool.user_location=userLocation; } return tool; }
-function buildMcpToolsPayload(){ const servers=getConfiguredMcpServers(); if(!servers.length) return null; const tools=servers.filter(server=>server.enabled && server.serverUrl).map(server=>{ const tool={ type:'mcp', server_url:server.serverUrl }; const azureCompatible=mcpUsesHeaderAuthorization(); const serverLabel=(server.serverLabel || server.name || server.serverUrl || '').toString().trim(); if(serverLabel) tool.server_label=serverLabel; if(!azureCompatible){ if(server.serverDescription) tool.server_description=server.serverDescription; if(server.projectConnectionId) tool.project_connection_id=server.projectConnectionId; const allowedTools=sanitizeList(server.allowedTools); if(allowedTools.length) tool.allowed_tools=allowedTools; if(server.requireApproval && server.requireApproval!=='default') tool.require_approval=server.requireApproval; } if(server.headers && typeof server.headers==='object' && Object.keys(server.headers).length){ tool.headers={ ...server.headers }; }
+function buildMcpToolsPayload(){ const servers=getConfiguredMcpServers(); if(!servers.length) return null; const tools=servers.filter(server=>server.enabled && server.serverUrl).map(server=>{ const tool={ type:'mcp', server_url:server.serverUrl }; const azureCompatible=mcpUsesHeaderAuthorization(); const serverLabel=(server.serverLabel || server.name || server.serverUrl || '').toString().trim(); if(serverLabel) tool.server_label=serverLabel; if(server.requireApproval && server.requireApproval!=='default') tool.require_approval=server.requireApproval; if(!azureCompatible){ if(server.serverDescription) tool.server_description=server.serverDescription; if(server.projectConnectionId) tool.project_connection_id=server.projectConnectionId; const allowedTools=sanitizeList(server.allowedTools); if(allowedTools.length) tool.allowed_tools=allowedTools; } if(server.headers && typeof server.headers==='object' && Object.keys(server.headers).length){ tool.headers={ ...server.headers }; }
     const normalized=splitAuthorizationHeader(tool.headers||{}, server.authorization);
     if(normalized.authorization){
       if(mcpUsesHeaderAuthorization()) normalized.headers.Authorization=normalized.authorization;
@@ -246,6 +246,7 @@ let analyser=null; let audioCtxVis=null; let rafId=null; let remoteOutputCtx=nul
 // Response tracking (for cancellation)
 let activeResponseId=null; // current in-progress response id
 let assistantAudioStreaming=false; // true while response.output_audio.delta events are arriving
+let responseCancellable=false; // false once the response has handed off into MCP/tool execution or finished
 let autoInterruptEnabled=true; // default on, can expose toggle later
 Object.defineProperty(window,'__setAutoInterrupt',{ value:v=>{ autoInterruptEnabled=!!v; console.log('[autoInterruptEnabled]',autoInterruptEnabled); }});
 let autoInterruptConsecFrames=4; // 需要连续多少帧语音活动才触发打断
@@ -290,7 +291,7 @@ window.printLatencySummary=()=>{ if(!latencyHistory.length){ console.log('无延
 
 for(let i=0;i<48;i++){ const bar=document.createElement('div'); wave.appendChild(bar);} // simple visualizer bars
 
-function handleConnectionClosed(msg){ if(isRecording) stopRecording(); stopRemoteOutputMonitor(); webrtcActive=false; wsActive=false; activeConnType=null; pc=null; dataChannel=null; sessionInfo=null; webrtcKey=null; activeResponse=false; activeResponseId=null; assistantAudioStreaming=false; cancelInFlight=false; responseCreatedAt=0; secondarySessionUpdateSent=false; if(wsFirstMessageTimer){ clearTimeout(wsFirstMessageTimer); wsFirstMessageTimer=null; } if(mcpFollowupTimer){ clearTimeout(mcpFollowupTimer); mcpFollowupTimer=null; } if(remoteAudioEl){ try{remoteAudioEl.srcObject=null;}catch(_){} remoteAudioEl.remove(); remoteAudioEl=null; } connectBtn.disabled=false; disconnectBtn.disabled=true; micBtn.disabled=true; sendTextBtn.disabled=true; setStatus('已断开'); if(msg) log('sys',msg); }
+function handleConnectionClosed(msg){ if(wsAudioProc){ stopWsMicStreaming(false); } if(isRecording) stopRecording(); stopRemoteOutputMonitor(); webrtcActive=false; wsActive=false; activeConnType=null; pc=null; dataChannel=null; sessionInfo=null; webrtcKey=null; activeResponse=false; activeResponseId=null; assistantAudioStreaming=false; responseCancellable=false; cancelInFlight=false; responseCreatedAt=0; secondarySessionUpdateSent=false; wsInitialSessionIncludedTools=false; if(wsFirstMessageTimer){ clearTimeout(wsFirstMessageTimer); wsFirstMessageTimer=null; } if(mcpFollowupTimer){ clearTimeout(mcpFollowupTimer); mcpFollowupTimer=null; } if(remoteAudioEl){ try{remoteAudioEl.srcObject=null;}catch(_){} remoteAudioEl.remove(); remoteAudioEl=null; } connectBtn.disabled=false; disconnectBtn.disabled=true; micBtn.disabled=true; sendTextBtn.disabled=true; setStatus('已断开'); if(msg) log('sys',msg); }
 
 // ---- Transcription (server events) ----
 function handleTranscriptionDelta(target,payload){ const chunk = payload?.delta || payload?.text || payload?.value; if(!chunk) return; if(!target._modelTrPartial) target._modelTrPartial=''; target._modelTrPartial+=chunk; if(!target._modelTrDiv){ target._modelTrDiv=document.createElement('div'); target._modelTrDiv.className='msg'; target._modelTrDiv.innerHTML='<span class="role">模型转写:</span><span class="partial"></span>'; logEl.appendChild(target._modelTrDiv);} target._modelTrDiv.querySelector('.partial').textContent=target._modelTrPartial; logEl.scrollTop=logEl.scrollHeight; }
@@ -384,7 +385,7 @@ function buildWebSocketProxyUrl(){
   return `${protocol}//${window.location.host}/realtime-proxy?${params.toString()}`;
 }
 
-let ws=null; let wsActive=false; let wsFirstMessageTimer=null; let wsConnectedAt=0; let wsReceivedAny=false; let wsUrlLast=''; let secondarySessionUpdateSent=false;
+let ws=null; let wsActive=false; let wsFirstMessageTimer=null; let wsConnectedAt=0; let wsReceivedAny=false; let wsUrlLast=''; let secondarySessionUpdateSent=false; let wsInitialSessionIncludedTools=false;
 window.__wsRef=()=>ws; // 简单全局引用供调试
 // Raw frame & event debug toggles
 let rawFrameDebug=false; // 默认关闭，可在控制台设 window.__rawFrameDebug=true 打开
@@ -420,6 +421,7 @@ function startWebSocket(){
         log('diag','WS open url='+wsUrlLast+' path_variant='+ (sessionInfo?.path_variant)+' v1_resolved='+(sessionInfo?.use_v1_path_resolved)+' readyState='+ws.readyState);
         connectBtn.disabled=true; disconnectBtn.disabled=false; micBtn.disabled=false; sendTextBtn.disabled=!taskUsesConversationLifecycle(); setStatus('已连接(WebSocket)'); resolve();
         const initSession=(taskUsesConversationLifecycle() && !shouldUseGaWebSocket()) ? { type:'session.update', session:{} } : buildRealtimeSessionUpdatePayload({ includeTools:taskUsesConversationLifecycle() });
+        wsInitialSessionIncludedTools=Array.isArray(initSession?.session?.tools) && initSession.session.tools.length>0;
         try{ log('sys','初始 session.update: '+stringifyForLog(initSession)); }catch(_){ }
         ws.send(JSON.stringify(initSession));
           wsFirstMessageTimer=setTimeout(()=>{ if(!wsReceivedAny && isGaWebSocketUrl(wsUrlLast) && taskUsesConversationLifecycle()){ log('warn','GA WebSocket 无响应，尝试 preview 回退'); attemptWebSocketPreviewFallback(); } },800);
@@ -465,6 +467,7 @@ function handleWsMessage(e){
     case 'response.created':
       activeResponseId = msg.response?.id || null;
       activeResponse=true;
+      responseCancellable=true;
       responseCreatedAt=performance.now();
       markLatencyPoint('responseCreated');
       if(verboseDebug) log('diag','response.created id='+activeResponseId);
@@ -525,6 +528,7 @@ function handleWsMessage(e){
       if(ws._partial){ log('assistant', ws._partial); }
       ws._partial=''; ws._partialDiv=null; activeResponse=false; emitLatencyMetrics(true);
       assistantAudioStreaming=false;
+      responseCancellable=false;
       activeResponseId=null;
       cancelInFlight=false;
       responseCreatedAt=0;
@@ -533,10 +537,21 @@ function handleWsMessage(e){
       log('warn','响应已取消');
       activeResponse=false; activeResponseId=null; ws._partial=''; ws._partialDiv=null; removeAudioTranscriptPartialDiv();
       assistantAudioStreaming=false;
+      responseCancellable=false;
       cancelInFlight=false;
       responseCreatedAt=0;
       break;
     case 'error':
+      if(msg?.error?.code==='response_cancel_not_active'){
+        activeResponse=false;
+        activeResponseId=null;
+        assistantAudioStreaming=false;
+        responseCancellable=false;
+        cancelInFlight=false;
+        responseCreatedAt=0;
+        log('diag','response.cancel 被服务端忽略：当前已无活动响应');
+        break;
+      }
       if(getCurrentTaskType()==='translation' && !ws._translationTranscriptionFallbackSent){
         const text=stringifyForLog(msg.error||msg);
         if(/transcription|audio\.input|input.*audio|unknown_parameter|invalid_request|validation/i.test(text)){
@@ -553,7 +568,7 @@ function handleWsMessage(e){
   }
 }
 
-function scheduleSecondarySessionUpdate(){ if(!taskUsesConversationLifecycle()) return; if(secondarySessionUpdateSent) return; secondarySessionUpdateSent=true; setTimeout(()=>{ if(!wsActive || ws?.readyState!==WebSocket.OPEN) return; const sp=systemPromptInput?.value?.trim(); const payload={ type:'session.update', session:{} }; const isAzure = /\.azure\.com/i.test(sessionInfo?.endpoint||''); const currentUrl=wsUrlLast||''; const isGaWs=/\/openai\/v1\/realtime/.test(currentUrl) || /[?&]use_v1=1(?:&|$)/.test(currentUrl); if(isGaWs) payload.session.type='realtime';
+function scheduleSecondarySessionUpdate(){ if(!taskUsesConversationLifecycle()) return; if(secondarySessionUpdateSent) return; secondarySessionUpdateSent=true; setTimeout(()=>{ if(!wsActive || ws?.readyState!==WebSocket.OPEN) return; const sp=systemPromptInput?.value?.trim(); const payload={ type:'session.update', session:{} }; const isAzure = /\.azure\.com/i.test(sessionInfo?.endpoint||''); const currentUrl=wsUrlLast||''; const isGaWs=/\/openai\/v1\/realtime/.test(currentUrl) || /[?&]use_v1=1(?:&|$)/.test(currentUrl); if(isGaWs && wsInitialSessionIncludedTools){ log('diag','跳过二次 session.update：初始更新已包含 tools'); return; } if(isGaWs) payload.session.type='realtime';
   // Azure preview 对 hosted tools 兼容性不稳定，仍只在 GA v1 WebSocket 发送。
   if(isAzure){
     if(isGaWs){ const tools=buildRealtimeToolsPayload(); payload.session.tools=tools; if(tools.length){ payload.session.tool_choice='auto'; payload.session.instructions=buildConversationInstructions(sp, buildToolUseInstructions(tools)); } else { const instructions=buildConversationInstructions(sp); if(instructions) payload.session.instructions=instructions; } logRealtimeTools(tools); }
@@ -630,6 +645,7 @@ function handleRealtimeToolEvent(target,msg){
   }
   if(type==='response.mcp_call_arguments.delta') return true;
   if(type==='response.mcp_call.in_progress'){
+    responseCancellable=false;
     log('sys','MCP 工具调用中');
     return true;
   }
@@ -644,6 +660,7 @@ function handleRealtimeToolEvent(target,msg){
   if(type==='response.output_item.added'){
     const item=msg.item||{};
     if(item.type==='mcp_call'){
+      responseCancellable=false;
       log('sys','准备调用 MCP: '+(item.server_label||'MCP')+'.'+(item.name||'unknown'));
       return true;
     }
@@ -786,9 +803,9 @@ async function startWebRTC(){ webrtcKey=sessionInfo.client_secret.value; const s
   dataChannel=pc.createDataChannel('realtime'); dataChannel.addEventListener('open',()=>{ log('sys','DataChannel 打开'); webrtcActive=true; activeConnType='webrtc'; activeResponse=false; connectBtn.disabled=true; disconnectBtn.disabled=false; micBtn.disabled=false; sendTextBtn.disabled=!taskUsesConversationLifecycle(); setStatus('已连接(WebRTC)'); const init=buildRealtimeSessionUpdatePayload({ includeTools:taskUsesConversationLifecycle() }); log('sys','session.update payload: '+stringifyForLog(init)); dataChannel.send(JSON.stringify(init)); if(enableServerTurnInput?.checked && taskUsesConversationLifecycle()) log('sys','服务器断句已启用(默认)'); if(document.getElementById('enableLatencyLog')?.checked) log('lat','(WebRTC) 音频通过 RTP 轨道传输, 不会出现 response.audio.delta 事件'); }); dataChannel.addEventListener('message', onDataChannelMessage); dataChannel.addEventListener('close', ()=> handleConnectionClosed('DataChannel 已关闭')); try{ audioStream=await navigator.mediaDevices.getUserMedia(buildMicCaptureConstraints()); audioStream.getAudioTracks().forEach(t=>pc.addTrack(t,audioStream)); }catch(e){ log('error','麦克风失败: '+e.message); }
   const offer=await pc.createOffer(); await pc.setLocalDescription(offer); const resp=await fetch(rtcUrl,{ method:'POST', body: offer.sdp, headers:{ 'Authorization':`Bearer ${webrtcKey}`, 'Content-Type':'application/sdp' } }); if(!resp.ok){ log('error','WebRTC offer 失败: '+resp.status); return; } const answer=await resp.text(); await pc.setRemoteDescription({ type:'answer', sdp:answer }); }
 
-function finishDataChannelResponse(type){ if(dataChannel?._partial){ log('assistant', dataChannel._partial); } else if(type==='response.completed'){ log('assistant','[完成]'); } if(dataChannel){ dataChannel._partial=''; dataChannel._partialDiv=null; } activeResponse=false; assistantAudioStreaming=false; activeResponseId=null; cancelInFlight=false; responseCreatedAt=0; emitLatencyMetrics(true); }
+function finishDataChannelResponse(type){ if(dataChannel?._partial){ log('assistant', dataChannel._partial); } else if(type==='response.completed'){ log('assistant','[完成]'); } if(dataChannel){ dataChannel._partial=''; dataChannel._partialDiv=null; } activeResponse=false; assistantAudioStreaming=false; responseCancellable=false; activeResponseId=null; cancelInFlight=false; responseCreatedAt=0; emitLatencyMetrics(true); }
 function onDataChannelMessage(e){ try{ const msg=JSON.parse(e.data); const type=msg.type||''; if(handleRealtimeToolEvent(dataChannel,msg)) return; if(type==='response.output_text.delta'){ markLatency('text'); if(!dataChannel._partial) dataChannel._partial=''; dataChannel._partial+=msg.delta; if(!dataChannel._partialDiv){ dataChannel._partialDiv=document.createElement('div'); dataChannel._partialDiv.className='msg'; dataChannel._partialDiv.innerHTML='<span class="role">助理:</span><span class="partial"></span>'; logEl.appendChild(dataChannel._partialDiv);} dataChannel._partialDiv.querySelector('.partial').textContent=dataChannel._partial; }
-  else if(type==='response.created'){ activeResponseId=msg.response?.id||null; activeResponse=true; responseCreatedAt=performance.now(); markLatencyPoint('responseCreated'); if(verboseDebug) log('diag','response.created id='+activeResponseId); }
+  else if(type==='response.created'){ activeResponseId=msg.response?.id||null; activeResponse=true; responseCancellable=true; responseCreatedAt=performance.now(); markLatencyPoint('responseCreated'); if(verboseDebug) log('diag','response.created id='+activeResponseId); }
   else if(type==='session.output_audio.delta'){ markLatency('audioDelta'); playBase64Pcm(msg.delta); assistantAudioStreaming=true; }
   else if(type==='session.output_transcript.delta'){ markLatency('text'); handleStreamingTextDelta(dataChannel,'translationOutput','翻译',msg); }
   else if(type==='session.input_transcript.delta'){ handleStreamingTextDelta(dataChannel,'translationInput','源转写',msg); }
@@ -797,7 +814,7 @@ function onDataChannelMessage(e){ try{ const msg=JSON.parse(e.data); const type=
   else if(type==='response.audio_transcript.delta' || type==='response.output_audio_transcript.delta'){ if(typeof msg.delta==='string'){ audioTranscriptPartial+=msg.delta; showOrUpdateAudioTranscript(audioTranscriptPartial); markLatency('text'); } }
   else if(type==='response.audio_transcript.done' || type==='response.output_audio_transcript.done'){ if(msg.transcript && !audioTranscriptPartial.endsWith(msg.transcript)) audioTranscriptPartial+=msg.transcript; if(audioTranscriptPartial){ log('助理(语音转写)', audioTranscriptPartial); audioTranscriptPartial=''; removeAudioTranscriptPartialDiv(); } }
   else if(type==='response.done' || type==='response.completed'){ finishDataChannelResponse(type); }
-  else if(type==='response.cancelled'){ log('warn','响应已取消'); activeResponse=false; assistantAudioStreaming=false; activeResponseId=null; cancelInFlight=false; responseCreatedAt=0; if(dataChannel){ dataChannel._partial=''; dataChannel._partialDiv=null; } removeAudioTranscriptPartialDiv(); }
+  else if(type==='response.cancelled'){ log('warn','响应已取消'); activeResponse=false; assistantAudioStreaming=false; responseCancellable=false; activeResponseId=null; cancelInFlight=false; responseCreatedAt=0; if(dataChannel){ dataChannel._partial=''; dataChannel._partialDiv=null; } removeAudioTranscriptPartialDiv(); }
   else if(type==='input_audio_buffer.speech_started'){ ensureLatencyVoiceStart(); }
   else if(type==='input_audio_buffer.speech_stopped'){ markLatencyPoint('speechStop'); }
   else if(type==='input_audio_buffer.committed'){ markLatencyPoint('commit'); }
@@ -811,7 +828,7 @@ function onDataChannelMessage(e){ try{ const msg=JSON.parse(e.data); const type=
 async function toggleMic(){ if(isRecording){ stopRecording(); return; } if(!audioStream){ audioStream=await navigator.mediaDevices.getUserMedia(buildMicCaptureConstraints()); if(pc){ audioStream.getAudioTracks().forEach(t=>pc.addTrack(t,audioStream)); } } // simple local RMS visualizer
   try{ audioCtxVis = audioCtxVis || new (window.AudioContext||window.webkitAudioContext)(); const src=audioCtxVis.createMediaStreamSource(audioStream); analyser=audioCtxVis.createAnalyser(); analyser.fftSize=256; src.connect(analyser); visualize(); }catch(_){ }
   if(enableLocalStt.checked) startLocalSTT(); isRecording=true; micBtn.textContent='停止说话'; log('sys','麦克风已开启'); startLatencyTurn('voice'); }
-function stopRecording(){ markLatencyPoint('speechStop'); if(audioStream){ audioStream.getTracks().forEach(t=>t.stop()); audioStream=null; } cancelAnimationFrame(rafId); if(sttActive) stopLocalSTT(); isRecording=false; micBtn.textContent='开始说话'; Array.from(wave.children).forEach(c=>{ c.style.height='4px'; c.classList.remove('active'); }); log('sys','麦克风已关闭'); }
+function stopRecording(){ markLatencyPoint('speechStop'); if(wsAudioProc){ stopWsMicStreaming(false); } if(audioStream){ audioStream.getTracks().forEach(t=>t.stop()); audioStream=null; } cancelAnimationFrame(rafId); if(sttActive) stopLocalSTT(); isRecording=false; micBtn.textContent='开始说话'; Array.from(wave.children).forEach(c=>{ c.style.height='4px'; c.classList.remove('active'); }); log('sys','麦克风已关闭'); }
 
 // ---- Text send ----
 // 兼容旧函数名（仍可能被外部脚本调用）
@@ -940,6 +957,10 @@ function flushWsAudioChunk(){
   if(!wsAudioBuffer.length) return;
   let total=0; wsAudioBuffer.forEach(b=> total+=b.length);
   const merged = new Int16Array(total); let off=0; wsAudioBuffer.forEach(b=>{ merged.set(b,off); off+=b.length; }); wsAudioBuffer=[];
+  if(activeConnType!=='websocket' || !wsActive || !ws || ws.readyState!==WebSocket.OPEN){
+    if(verboseDebug) log('diag','WS 未就绪，丢弃残留音频分片');
+    return;
+  }
   const bytes = new Uint8Array(merged.buffer);
   let binary=''; for(let i=0;i<bytes.length;i++){ binary+=String.fromCharCode(bytes[i]); }
   const b64 = btoa(binary);
@@ -950,7 +971,7 @@ function flushWsAudioChunk(){
 function stopWsMicStreaming(commit=true){
   try{ if(wsAudioProc){ wsAudioProc.disconnect(); wsAudioProc.onaudioprocess=null; } if(wsAudioCtx){ wsAudioCtx.close().catch(()=>{}); } }catch(_){ }
   wsAudioProc=null; wsAudioCtx=null;
-  flushWsAudioChunk();
+  if(commit) flushWsAudioChunk(); else wsAudioBuffer=[];
   if(commit && activeConnType==='websocket' && wsActive && ws?.readyState===WebSocket.OPEN){
     const task=getCurrentTaskType();
     const ms = wsTotalSamples / WS_STREAM_TARGET_RATE * 1000;
@@ -996,6 +1017,7 @@ toggleMic = async function(){
 function stopAllScheduledAudio(){ if(audioPlayCtx){ try{ audioPlayCtx.close(); }catch(_){ } audioPlayCtx=null; audioPlayHead=0; } }
 function cancelActiveResponse(){
   if(!activeResponseId){ log('warn','当前无进行中的响应'); return; }
+  if(!responseCancellable){ if(verboseDebug) log('diag','当前响应已不可取消，忽略 response.cancel'); return; }
   if(cancelInFlight){ if(verboseDebug) log('diag','取消进行中，忽略重复'); return; }
   const payload={ type:'response.cancel', response_id: activeResponseId };
   try{
