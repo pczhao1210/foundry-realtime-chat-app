@@ -134,15 +134,14 @@ function buildRealtimeSessionUpdatePayload({ includeTools=true }={}){
   if(includeTools){ tools=buildRealtimeToolsPayload(); }
   const instructions=buildConversationInstructions(sp, tools.length ? buildToolUseInstructions(tools) : '');
   if(instructions) session.instructions=instructions;
-  const maxTokRaw=maxTokensInput.value;
-  const maxTok=Number.isFinite(Number(maxTokRaw)) && maxTokRaw!==''? parseInt(maxTokRaw,10): undefined;
-  if(maxTok) session.max_response_output_tokens=maxTok;
   if(includeTools){ session.tools=tools; if(tools.length) session.tool_choice='auto'; logRealtimeTools(tools); }
   return { type:'session.update', session };
 }
 let mcpConfig=null;
 let webSearchConfig={ enabled:false, type:'web_search', allowed_domains:[], user_location:null };
-function updateMcpStatus(){ if(!mcpStatusEl) return; if(!mcpConfig || !mcpConfig.serverUrl){ mcpStatusEl.textContent='MCP: 未配置'; return; } if(mcpConfig.enabled){ const label=mcpConfig.serverLabel||mcpConfig.serverUrl; mcpStatusEl.textContent=`MCP: ${label}`; } else { mcpStatusEl.textContent='MCP: 已保存(未启用)'; } }
+function buildMicCaptureConstraints(){ return { audio:{ echoCancellation:true, noiseSuppression:true, autoGainControl:true, channelCount:1 } }; }
+function getConfiguredMcpServers(){ const servers=Array.isArray(mcpConfig?.servers) ? mcpConfig.servers.filter(server=>server && typeof server==='object') : (mcpConfig && mcpConfig.serverUrl ? [mcpConfig] : []); return servers.filter(server=>server.serverUrl || server.serverLabel || server.serverDescription || server.projectConnectionId || server.authorization || sanitizeList(server.allowedTools).length || (server.headers && Object.keys(server.headers).length)); }
+function updateMcpStatus(){ if(!mcpStatusEl) return; const servers=getConfiguredMcpServers(); if(!servers.length){ mcpStatusEl.textContent='MCP: 未配置'; return; } const enabledServers=servers.filter(server=>server.enabled && server.serverUrl); if(!enabledServers.length){ mcpStatusEl.textContent=`MCP: 已保存 ${servers.length} 个(未启用)`; return; } if(enabledServers.length===1){ const server=enabledServers[0]; const label=server.serverLabel||server.serverUrl; mcpStatusEl.textContent=`MCP: ${label}`; return; } mcpStatusEl.textContent=`MCP: 已启用 ${enabledServers.length} 个`; }
 async function refreshMcpConfig(){ try{ const resp=await fetch('/api/mcp-config',{ cache:'no-store' }); if(resp.ok){ mcpConfig=await resp.json(); } else { mcpConfig=null; } }catch(_){ mcpConfig=null; } updateMcpStatus(); }
 function openMcpConfig(){ const w=window.open('/mcp.html','mcpConfig','width=520,height=640'); if(w) w.focus(); }
 btnMcpConfig?.addEventListener('click', openMcpConfig);
@@ -165,14 +164,16 @@ function splitAuthorizationHeader(headers, authorization=''){
 function normalizeHostedToolType(value){ const type=(value||'web_search').toString().trim(); return (type==='web_search'||type==='web_search_preview')? type : 'web_search'; }
 function mcpUsesHeaderAuthorization(){ const provider=(window._cfg?.provider||sessionInfo?.provider||'').toString().toLowerCase(); const endpoint=sessionInfo?.endpoint || window._cfg?.endpoint || ''; return provider==='azure' || /\.azure\.com/i.test(endpoint); }
 function buildNativeWebSearchToolPayload(){ const enabled=!!enableNativeWebSearchInput?.checked; if(!enabled) return null; const cfg=webSearchConfig||{}; const tool={ type:normalizeHostedToolType(cfg.type) }; const allowed=sanitizeList(cfg.allowed_domains||cfg.allowedDomains); if(allowed.length) tool.filters={ allowed_domains:allowed }; const loc=cfg.user_location; if(loc && typeof loc==='object' && !Array.isArray(loc)){ const userLocation={ type:'approximate' }; ['country','city','region','timezone'].forEach(key=>{ const value=(loc[key]||'').toString().trim(); if(value) userLocation[key]=value; }); if(Object.keys(userLocation).length>1) tool.user_location=userLocation; } return tool; }
-function buildMcpToolsPayload(){ if(!mcpConfig || !mcpConfig.serverUrl) return null; if(!mcpConfig.enabled) return []; const tool={ type:'mcp', server_url:mcpConfig.serverUrl }; if(mcpConfig.serverLabel) tool.server_label=mcpConfig.serverLabel; if(mcpConfig.serverDescription) tool.server_description=mcpConfig.serverDescription; if(mcpConfig.projectConnectionId) tool.project_connection_id=mcpConfig.projectConnectionId; const allowedTools=sanitizeList(mcpConfig.allowedTools); if(allowedTools.length) tool.allowed_tools=allowedTools; if(mcpConfig.requireApproval && mcpConfig.requireApproval!=='default') tool.require_approval=mcpConfig.requireApproval; if(mcpConfig.headers && typeof mcpConfig.headers==='object' && Object.keys(mcpConfig.headers).length){ tool.headers={ ...mcpConfig.headers }; }
-  const normalized=splitAuthorizationHeader(tool.headers||{}, mcpConfig.authorization);
-  if(normalized.authorization){
-    if(mcpUsesHeaderAuthorization()) normalized.headers.Authorization=normalized.authorization;
-    else tool.authorization=normalized.authorization;
-  }
-  if(Object.keys(normalized.headers).length) tool.headers=normalized.headers; else delete tool.headers;
-  return [tool];
+function buildMcpToolsPayload(){ const servers=getConfiguredMcpServers(); if(!servers.length) return null; const tools=servers.filter(server=>server.enabled && server.serverUrl).map(server=>{ const tool={ type:'mcp', server_url:server.serverUrl }; const azureCompatible=mcpUsesHeaderAuthorization(); const serverLabel=(server.serverLabel || server.name || server.serverUrl || '').toString().trim(); if(serverLabel) tool.server_label=serverLabel; if(!azureCompatible){ if(server.serverDescription) tool.server_description=server.serverDescription; if(server.projectConnectionId) tool.project_connection_id=server.projectConnectionId; const allowedTools=sanitizeList(server.allowedTools); if(allowedTools.length) tool.allowed_tools=allowedTools; if(server.requireApproval && server.requireApproval!=='default') tool.require_approval=server.requireApproval; } if(server.headers && typeof server.headers==='object' && Object.keys(server.headers).length){ tool.headers={ ...server.headers }; }
+    const normalized=splitAuthorizationHeader(tool.headers||{}, server.authorization);
+    if(normalized.authorization){
+      if(mcpUsesHeaderAuthorization()) normalized.headers.Authorization=normalized.authorization;
+      else tool.authorization=normalized.authorization;
+    }
+    if(Object.keys(normalized.headers).length) tool.headers=normalized.headers; else delete tool.headers;
+    return tool;
+  });
+  return tools;
 }
 function buildRealtimeToolsPayload(){ const tools=[]; const webSearchTool=buildNativeWebSearchToolPayload(); if(webSearchTool) tools.push(webSearchTool); const mcpTools=buildMcpToolsPayload(); if(Array.isArray(mcpTools)) tools.push(...mcpTools); return tools; }
 function buildToolUseInstructions(tools){ if(!Array.isArray(tools)||!tools.length) return ''; const hasMcp=tools.some(tool=>tool.type==='mcp'); const hasWebSearch=tools.some(tool=>/^web_search/.test(tool.type||'')); const lines=['工具使用规则: 只能使用当前会话 tools 中实际提供的工具，不要臆造、假装或模拟工具结果。']; if(hasMcp) lines.push('对于天气、地图、地理位置、路线、POI、实时状态等需要外部数据的查询，如果信息足够明确，应优先调用可用的 MCP 工具；缺少城市或地点时先追问。'); if(hasWebSearch) lines.push('对于最新信息、网页事实或需要联网核验的问题，应使用 web_search 工具后再回答。'); lines.push('工具调用失败时，简要说明无法获取实时数据，不要用训练知识编造当前天气、降雨概率或未来预报。'); return lines.join('\n'); }
@@ -782,7 +783,7 @@ function buildWebRtcUrl(selectedModel){
 }
 
 async function startWebRTC(){ webrtcKey=sessionInfo.client_secret.value; const selectedModel=getResolvedRealtimeModel(); if(!selectedModel){ log('error','缺少 deployment/model，无法发起 WebRTC'); return; } const rtcUrl=buildWebRtcUrl(selectedModel); log('sys','WebRTC offer -> '+rtcUrl); pc=new RTCPeerConnection(); remoteAudioEl=document.createElement('audio'); remoteAudioEl.autoplay=true; document.body.appendChild(remoteAudioEl); pc.ontrack=ev=>{ const stream=ev.streams[0]; remoteAudioEl.srcObject=stream; startRemoteOutputMonitor(stream); };
-  dataChannel=pc.createDataChannel('realtime'); dataChannel.addEventListener('open',()=>{ log('sys','DataChannel 打开'); webrtcActive=true; activeConnType='webrtc'; activeResponse=false; connectBtn.disabled=true; disconnectBtn.disabled=false; micBtn.disabled=false; sendTextBtn.disabled=!taskUsesConversationLifecycle(); setStatus('已连接(WebRTC)'); const init=buildRealtimeSessionUpdatePayload({ includeTools:taskUsesConversationLifecycle() }); log('sys','session.update payload: '+stringifyForLog(init)); dataChannel.send(JSON.stringify(init)); if(enableServerTurnInput?.checked && taskUsesConversationLifecycle()) log('sys','服务器断句已启用(默认)'); if(document.getElementById('enableLatencyLog')?.checked) log('lat','(WebRTC) 音频通过 RTP 轨道传输, 不会出现 response.audio.delta 事件'); }); dataChannel.addEventListener('message', onDataChannelMessage); dataChannel.addEventListener('close', ()=> handleConnectionClosed('DataChannel 已关闭')); try{ audioStream=await navigator.mediaDevices.getUserMedia({ audio:true }); audioStream.getAudioTracks().forEach(t=>pc.addTrack(t,audioStream)); }catch(e){ log('error','麦克风失败: '+e.message); }
+  dataChannel=pc.createDataChannel('realtime'); dataChannel.addEventListener('open',()=>{ log('sys','DataChannel 打开'); webrtcActive=true; activeConnType='webrtc'; activeResponse=false; connectBtn.disabled=true; disconnectBtn.disabled=false; micBtn.disabled=false; sendTextBtn.disabled=!taskUsesConversationLifecycle(); setStatus('已连接(WebRTC)'); const init=buildRealtimeSessionUpdatePayload({ includeTools:taskUsesConversationLifecycle() }); log('sys','session.update payload: '+stringifyForLog(init)); dataChannel.send(JSON.stringify(init)); if(enableServerTurnInput?.checked && taskUsesConversationLifecycle()) log('sys','服务器断句已启用(默认)'); if(document.getElementById('enableLatencyLog')?.checked) log('lat','(WebRTC) 音频通过 RTP 轨道传输, 不会出现 response.audio.delta 事件'); }); dataChannel.addEventListener('message', onDataChannelMessage); dataChannel.addEventListener('close', ()=> handleConnectionClosed('DataChannel 已关闭')); try{ audioStream=await navigator.mediaDevices.getUserMedia(buildMicCaptureConstraints()); audioStream.getAudioTracks().forEach(t=>pc.addTrack(t,audioStream)); }catch(e){ log('error','麦克风失败: '+e.message); }
   const offer=await pc.createOffer(); await pc.setLocalDescription(offer); const resp=await fetch(rtcUrl,{ method:'POST', body: offer.sdp, headers:{ 'Authorization':`Bearer ${webrtcKey}`, 'Content-Type':'application/sdp' } }); if(!resp.ok){ log('error','WebRTC offer 失败: '+resp.status); return; } const answer=await resp.text(); await pc.setRemoteDescription({ type:'answer', sdp:answer }); }
 
 function finishDataChannelResponse(type){ if(dataChannel?._partial){ log('assistant', dataChannel._partial); } else if(type==='response.completed'){ log('assistant','[完成]'); } if(dataChannel){ dataChannel._partial=''; dataChannel._partialDiv=null; } activeResponse=false; assistantAudioStreaming=false; activeResponseId=null; cancelInFlight=false; responseCreatedAt=0; emitLatencyMetrics(true); }
@@ -807,7 +808,7 @@ function onDataChannelMessage(e){ try{ const msg=JSON.parse(e.data); const type=
 }catch(err){ log('raw', e.data.slice(0,200)); } }
 
 // ---- Mic handling (WebRTC already sending track) ----
-async function toggleMic(){ if(isRecording){ stopRecording(); return; } if(!audioStream){ audioStream=await navigator.mediaDevices.getUserMedia({ audio:true }); if(pc){ audioStream.getAudioTracks().forEach(t=>pc.addTrack(t,audioStream)); } } // simple local RMS visualizer
+async function toggleMic(){ if(isRecording){ stopRecording(); return; } if(!audioStream){ audioStream=await navigator.mediaDevices.getUserMedia(buildMicCaptureConstraints()); if(pc){ audioStream.getAudioTracks().forEach(t=>pc.addTrack(t,audioStream)); } } // simple local RMS visualizer
   try{ audioCtxVis = audioCtxVis || new (window.AudioContext||window.webkitAudioContext)(); const src=audioCtxVis.createMediaStreamSource(audioStream); analyser=audioCtxVis.createAnalyser(); analyser.fftSize=256; src.connect(analyser); visualize(); }catch(_){ }
   if(enableLocalStt.checked) startLocalSTT(); isRecording=true; micBtn.textContent='停止说话'; log('sys','麦克风已开启'); startLatencyTurn('voice'); }
 function stopRecording(){ markLatencyPoint('speechStop'); if(audioStream){ audioStream.getTracks().forEach(t=>t.stop()); audioStream=null; } cancelAnimationFrame(rafId); if(sttActive) stopLocalSTT(); isRecording=false; micBtn.textContent='开始说话'; Array.from(wave.children).forEach(c=>{ c.style.height='4px'; c.classList.remove('active'); }); log('sys','麦克风已关闭'); }
@@ -864,8 +865,8 @@ function visualize(){
       const earlyWindowMs = 2500; // 在响应创建后允许提前打断的时间窗口
       const sinceCreated = responseCreatedAt? (performance.now()-responseCreatedAt): Infinity;
       const canInterruptEarly = sinceCreated <= earlyWindowMs;
-      const streamingOrEarly = assistantAudioStreaming || canInterruptEarly; // 允许音频尚未开始时插话
-      if(autoInterruptEnabled && streamingOrEarly && activeResponseId && !cancelInFlight){
+      const canAutoInterruptNow = !assistantAudioStreaming && canInterruptEarly; // 仅允许在助理尚未开始播音的早期窗口自动插话
+      if(autoInterruptEnabled && canAutoInterruptNow && activeResponseId && !cancelInFlight){
         if(consecutiveVoiceFrames>=autoInterruptConsecFrames){
           if(verboseDebug) log('diag',`VAD触发: 连续${consecutiveVoiceFrames}帧 (rms=${rms.toFixed(3)} 阈=${vadRmsThreshold}) 响应创建于 ${sinceCreated.toFixed(0)}ms 前 -> 取消`);
           cancelActiveResponse();

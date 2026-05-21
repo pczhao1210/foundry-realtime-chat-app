@@ -51,7 +51,7 @@ flowchart TD
 | 类型 | 典型用途 | 配置位置 | 备注 |
 | --- | --- | --- | --- |
 | hosted tool | Web search 等平台内置工具 | `config/config.json` 的 `realtime.web_search` 和主界面开关 | API/区域支持会变化，遇到 `unknown_parameter` 时先关闭开关 |
-| MCP tool | 地图、天气、业务系统、第三方服务 | `config/mcp_config.json` 或 `/mcp.html` | Azure Realtime 当前实测需要把 MCP Authorization 放在 `headers.Authorization` |
+| MCP tool | 地图、天气、业务系统、第三方服务 | `config/mcp_config.json` 或 `/mcp.html` | 当前兼容 `servers` 数组、VS Code 风格 `servers` 对象，以及常见 `mcpServers` 对象；Azure Realtime 当前实测需要把 MCP Authorization 放在 `headers.Authorization` |
 
 ## Prompt 实践
 

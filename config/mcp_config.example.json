@@ -1,11 +1,33 @@
 {
-  "enabled": false,
-  "serverUrl": "",
-  "serverLabel": "",
-  "serverDescription": "",
-  "projectConnectionId": "",
-  "allowedTools": [],
-  "authorization": "",
-  "requireApproval": "default",
-  "headers": {}
+  "mcpServers": {
+    "microsoft-docs": {
+      "enabled": false,
+      "owner": "admin",
+      "type": "streamable-http",
+      "url": "https://learn.microsoft.com/api/mcp",
+      "headers": {},
+      "serverLabel": "Microsoft Docs",
+      "serverDescription": "Microsoft Learn and code sample search service",
+      "allowedTools": [
+        "microsoft_docs_search",
+        "microsoft_code_sample_search",
+        "microsoft_docs_fetch"
+      ],
+      "requireApproval": "never",
+      "enableKeepAlive": true
+    },
+    "empty-sample": {
+      "enabled": false,
+      "owner": "",
+      "type": "",
+      "url": "",
+      "headers": {},
+      "serverLabel": "",
+      "serverDescription": "",
+      "projectConnectionId": "",
+      "allowedTools": [],
+      "requireApproval": "default",
+      "enableKeepAlive": false
+    }
+  }
 }

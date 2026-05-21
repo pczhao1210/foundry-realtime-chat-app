@@ -48,7 +48,16 @@ let azureIdentityCredentialCache = { cacheKey:'', credential:null };
 
 function defaultMcpConfig(){
   return {
+    servers:[]
+  };
+}
+
+function defaultMcpServerConfig(){
+  return {
+    name:'',
     enabled:false,
+    owner:'',
+    transportType:'',
     serverUrl:'',
     serverLabel:'',
     serverDescription:'',
@@ -56,7 +65,8 @@ function defaultMcpConfig(){
     allowedTools:[],
     authorization:'',
     requireApproval:'default',
-    headers:{}
+    headers:{},
+    enableKeepAlive:false
   };
 }
 
@@ -83,7 +93,7 @@ function loadMcpConfig(){
   try{
     const raw=fs.readFileSync(mcpCfgPath,'utf-8');
     const parsed=JSON.parse(raw);
-    return sanitizeMcpPayload({ ...defaultMcpConfig(), ...parsed, headers: typeof parsed?.headers==='object' && !Array.isArray(parsed.headers) ? parsed.headers : {} });
+    return sanitizeMcpPayload(parsed);
   }catch(err){
     console.warn('[mcp] Failed to load config, falling back to default', err.message);
     return defaultMcpConfig();
@@ -141,20 +151,60 @@ function normalizeRequireApproval(val){
   throw new Error('invalid requireApproval value');
 }
 
+function normalizeMcpTransportType(value, hasUrl=false){
+  const fallback=hasUrl ? 'streamable-http' : '';
+  if(value===undefined || value===null || String(value).trim()==='') return fallback;
+  const norm=String(value).trim().toLowerCase();
+  if(['streamable-http','http','sse','stdio'].includes(norm)) return norm;
+  return String(value).trim();
+}
+
+function normalizeMcpServerKey(value, fallback='server'){
+  const base=String(value||'').trim().replace(/[^a-zA-Z0-9_-]+/g,'-').replace(/^-+|-+$/g,'');
+  return base || fallback;
+}
+
+function getNamedMcpServerEntries(payload){
+  if(!payload || typeof payload!=='object' || Array.isArray(payload)) return null;
+  if(payload.mcpServers && typeof payload.mcpServers==='object' && !Array.isArray(payload.mcpServers)){
+    return Object.entries(payload.mcpServers);
+  }
+  if(payload.servers && typeof payload.servers==='object' && !Array.isArray(payload.servers)){
+    return Object.entries(payload.servers);
+  }
+  return null;
+}
+
 function sanitizeMcpPayload(payload){
   const base=defaultMcpConfig();
+  if(Array.isArray(payload)) return { servers:payload.map(sanitizeMcpServerPayload) };
   if(!payload || typeof payload!=='object') return base;
+  const namedEntries=getNamedMcpServerEntries(payload);
+  if(namedEntries) return { servers:namedEntries.map(([name,server])=>sanitizeMcpServerPayload(server, name)) };
+  if(Array.isArray(payload.servers)) return { servers:payload.servers.map(sanitizeMcpServerPayload) };
+  return { servers:[sanitizeMcpServerPayload(payload)] };
+}
+
+function sanitizeMcpServerPayload(payload, nameHint=''){
+  const base=defaultMcpServerConfig();
+  if(!payload || typeof payload!=='object' || Array.isArray(payload)) return base;
+  const name=(payload.name ?? payload.serverName ?? nameHint ?? '').toString().trim();
   const enabled=Boolean(payload.enabled);
-  const serverUrl=(payload.serverUrl??'').toString().trim();
-  const serverLabel=(payload.serverLabel??'').toString().trim();
-  const serverDescription=(payload.serverDescription??'').toString().trim();
-  const projectConnectionId=(payload.projectConnectionId??'').toString().trim();
-  const allowedTools=sanitizeStringList(payload.allowedTools);
+  const serverUrl=(payload.serverUrl ?? payload.url ?? '').toString().trim();
+  const owner=(payload.owner ?? '').toString().trim();
+  const transportType=normalizeMcpTransportType(payload.transportType ?? payload.type, !!serverUrl);
+  const serverLabel=(payload.serverLabel ?? payload.label ?? payload.displayName ?? name ?? '').toString().trim();
+  const serverDescription=(payload.serverDescription ?? payload.description ?? '').toString().trim();
+  const projectConnectionId=(payload.projectConnectionId ?? payload.project_connection_id ?? '').toString().trim();
+  const allowedTools=sanitizeStringList(payload.allowedTools ?? payload.allowed_tools);
   const authorization=(payload.authorization??'').toString().trim();
-  const requireApproval=normalizeRequireApproval(payload.requireApproval);
+  const requireApproval=normalizeRequireApproval(payload.requireApproval ?? payload.require_approval);
   const { authorization:normalizedAuthorization, headers }=splitAuthorizationHeader(sanitizeHeaders(payload.headers), authorization);
-  const result={
+  return {
+    name,
     enabled: enabled && !!serverUrl,
+    owner,
+    transportType,
     serverUrl,
     serverLabel,
     serverDescription,
@@ -162,9 +212,44 @@ function sanitizeMcpPayload(payload){
     allowedTools,
     authorization:normalizedAuthorization,
     requireApproval,
-    headers
+    headers,
+    enableKeepAlive:Boolean(payload.enableKeepAlive)
   };
-  return result;
+}
+
+function getMcpServers(config=mcpConfig){
+  if(Array.isArray(config?.servers)) return config.servers;
+  if(config && typeof config==='object') return [sanitizeMcpServerPayload(config)];
+  return [];
+}
+
+function serializeMcpConfig(config=mcpConfig){
+  const servers=getMcpServers(config);
+  const primary=servers[0] || defaultMcpServerConfig();
+  const mcpServers={};
+  servers.forEach((server,index)=>{
+    const key=normalizeMcpServerKey(server.name || server.serverLabel || `server${index+1}`, `server${index+1}`);
+    const { authorization, headers }=splitAuthorizationHeader(sanitizeHeaders(server.headers), server.authorization);
+    if(authorization && !Object.keys(headers).some(header=>/^authorization$/i.test(header))) headers.Authorization=authorization;
+    mcpServers[key]={
+      enabled:!!server.enabled,
+      owner:server.owner || '',
+      type:server.transportType || (server.serverUrl ? 'streamable-http' : ''),
+      url:server.serverUrl || '',
+      headers,
+      enableKeepAlive:!!server.enableKeepAlive,
+      serverLabel:server.serverLabel || '',
+      serverDescription:server.serverDescription || '',
+      projectConnectionId:server.projectConnectionId || '',
+      allowedTools:Array.isArray(server.allowedTools) ? server.allowedTools : [],
+      requireApproval:server.requireApproval || 'default'
+    };
+  });
+  return {
+    ...primary,
+    servers,
+    mcpServers
+  };
 }
 
 function normalizeHostedToolType(value){
@@ -415,20 +500,25 @@ async function validateRealtimeAuth(){
 function isAzure(){ return getProvider()==='azure'; }
 function buildTrans(){ return undefined; }
 function buildMcpTools(){
-  if(!mcpConfig?.enabled || !mcpConfig.serverUrl) return undefined;
-  const tool={ type:'mcp', server_url:mcpConfig.serverUrl };
-  if(mcpConfig.serverLabel) tool.server_label=mcpConfig.serverLabel;
-  if(mcpConfig.serverDescription) tool.server_description=mcpConfig.serverDescription;
-  if(mcpConfig.projectConnectionId) tool.project_connection_id=mcpConfig.projectConnectionId;
-  if(Array.isArray(mcpConfig.allowedTools) && mcpConfig.allowedTools.length) tool.allowed_tools=mcpConfig.allowedTools;
-  if(mcpConfig.requireApproval && mcpConfig.requireApproval!=='default') tool.require_approval=mcpConfig.requireApproval;
-  const { authorization, headers }=splitAuthorizationHeader(sanitizeHeaders(mcpConfig.headers), mcpConfig.authorization);
-  if(authorization){
-    if(isAzure()) headers.Authorization=authorization;
-    else tool.authorization=authorization;
-  }
-  if(Object.keys(headers).length) tool.headers=headers;
-  return [tool];
+  const tools=getMcpServers().filter(server=>server?.enabled && server.serverUrl).map(server=>{
+    const tool={ type:'mcp', server_url:server.serverUrl };
+    const serverLabel=(server.serverLabel || server.name || server.serverUrl || '').toString().trim();
+    if(serverLabel) tool.server_label=serverLabel;
+    if(!isAzure()){
+      if(server.serverDescription) tool.server_description=server.serverDescription;
+      if(server.projectConnectionId) tool.project_connection_id=server.projectConnectionId;
+      if(Array.isArray(server.allowedTools) && server.allowedTools.length) tool.allowed_tools=server.allowedTools;
+      if(server.requireApproval && server.requireApproval!=='default') tool.require_approval=server.requireApproval;
+    }
+    const { authorization, headers }=splitAuthorizationHeader(sanitizeHeaders(server.headers), server.authorization);
+    if(authorization){
+      if(isAzure()) headers.Authorization=authorization;
+      else tool.authorization=authorization;
+    }
+    if(Object.keys(headers).length) tool.headers=headers;
+    return tool;
+  });
+  return tools.length ? tools : undefined;
 }
 
 function buildRealtimeTools(){
@@ -481,12 +571,10 @@ function buildGaClientSecretBody(task, modelOverride, voiceOverride, req){
     return { session:{ model, audio:{ input:{ transcription:buildTranslationInputTranscription(inputLanguage) }, output:{ language:getRequestedTargetLanguage(req) } } } };
   }
   const session={ type:'realtime', model };
-  const instructions=buildConversationInstructions(buildToolUseInstructions());
+  const instructions=buildConversationInstructions();
   if(instructions) session.instructions=instructions;
   const voice=normalizeRealtimeVoiceName(voiceOverride)||getRealtimeVoiceName();
   if(voice) session.audio={ output:{ voice } };
-  const tools=buildRealtimeTools();
-  if(tools?.length){ session.tools=tools; session.tool_choice='auto'; }
   return { session };
 }
 function resolveEndpoint(){
@@ -635,14 +723,14 @@ app.get('/api/realtime-auth-validation', async (req,res)=>{
 });
 
 app.get('/api/mcp-config', (req,res)=>{
-  res.json(mcpConfig);
+  res.json(serializeMcpConfig());
 });
 
 app.post('/api/mcp-config', (req,res)=>{
   try{
     const sanitized=sanitizeMcpPayload(req.body);
     persistMcpConfig(sanitized);
-    res.json({ ok:true, config:sanitized });
+    res.json({ ok:true, config:serializeMcpConfig(sanitized) });
   }catch(err){
     console.error('[mcp] Failed to update config', err);
     res.status(400).json({ error: err.message });

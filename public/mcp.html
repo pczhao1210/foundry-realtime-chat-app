@@ -16,6 +16,8 @@
     textarea { resize:vertical; min-height:96px; }
     small { opacity:0.7; font-size:0.75rem; }
     .actions { display:flex; gap:0.75rem; }
+    .server-switcher { display:flex; gap:0.75rem; align-items:flex-end; }
+    .server-switcher label { flex:1; }
     button { background:#238636; color:white; border:1px solid #2ea043; padding:0.55rem 1.1rem; border-radius:6px; cursor:pointer; font-size:0.85rem; }
     button.secondary { background:#30363d; border-color:#30363d; }
     button.danger { background:#d1242f; border-color:#f85149; }
@@ -30,10 +32,33 @@
   </header>
   <main>
     <form id="mcpForm">
+      <div class="server-switcher">
+        <label>
+          当前 MCP Server
+          <select id="serverIndex"></select>
+        </label>
+        <button type="button" id="btnAddServer" class="secondary">新增</button>
+        <button type="button" id="btnRemoveServer" class="danger">删除</button>
+      </div>
+      <label>
+        MCP Server Key
+        <input id="serverName" placeholder="例如: context7" />
+        <small>可选。兼容 `mcpServers`/VS Code 配置对象中的服务名键。</small>
+      </label>
       <label>
         MCP Server Label
         <input id="serverLabel" placeholder="例如: web-search" />
         <small>用于日志展示和审批提示，如果留空则自动使用 URL。</small>
+      </label>
+      <label>
+        Transport Type
+        <select id="transportType">
+          <option value="streamable-http">streamable-http</option>
+          <option value="http">http</option>
+          <option value="sse">sse</option>
+          <option value="stdio">stdio</option>
+        </select>
+        <small>本项目的 Realtime MCP 集成当前仅实际使用远程 URL 型服务器；`stdio` 仅作兼容展示，不会由本服务启动本地进程。</small>
       </label>
       <label>
         Server Description
@@ -44,6 +69,11 @@
         MCP Server URL
         <input id="serverUrl" placeholder="https://your-mcp-server.example.com" required />
         <small>Realtime API 将通过此地址连接远程 MCP 服务。</small>
+      </label>
+      <label>
+        Owner
+        <input id="owner" placeholder="例如: admin" />
+        <small>可选。用于兼容外部 MCP 客户端配置中的管理/归属字段。</small>
       </label>
       <label>
         Project Connection ID
@@ -77,6 +107,10 @@
       <label style="flex-direction:row; align-items:center; gap:0.5rem;">
         <input type="checkbox" id="enableTool" />
         <span>在新建 session 时启用 MCP tool</span>
+      </label>
+      <label style="flex-direction:row; align-items:center; gap:0.5rem;">
+        <input type="checkbox" id="enableKeepAlive" />
+        <span>启用 keep-alive 元数据（仅兼容保存，不直接影响 Realtime tool 声明）</span>
       </label>
       <div class="actions">
         <button type="submit">保存配置</button>
