@@ -37,6 +37,7 @@ export OPENAI_API_KEY="..."
 
 - 先用 WebSocket 跑通最小链路（排错简单）。
 - 再切 WebRTC 做低延迟音频与端到端体验。
+- 转写任务可以把输入语言作为可选 hint；翻译任务优先只声明目标语言。Azure Realtime translations 当前不接受源语言字段，源语言由服务自动识别。
 
 ## 工具能力说明
 

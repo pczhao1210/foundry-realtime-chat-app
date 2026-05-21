@@ -35,6 +35,7 @@ const voiceField = document.getElementById('voiceControl') || document.getElemen
 const voiceInput = document.getElementById('voice');
 const inputLanguageField = document.getElementById('inputLanguageControl') || document.getElementById('inputLanguageField');
 const inputLanguageInput = document.getElementById('inputLanguage');
+const inputLanguageNote = document.getElementById('inputLanguageNote');
 const targetLanguageField = document.getElementById('targetLanguageControl') || document.getElementById('targetLanguageField');
 const targetLanguageInput = document.getElementById('targetLanguage');
 const systemPromptInput = document.getElementById('systemPrompt');
@@ -56,6 +57,7 @@ const TASK_MODEL_OPTIONS={
 };
 const DEFAULT_VOICE_OPTIONS=['alloy','ash','ballad','coral','echo','sage','shimmer','verse'];
 const DEFAULT_SPEECH_STYLE_INSTRUCTIONS='# 口音与语音风格\n中文回答时使用自然、清晰、稳定的标准普通话；四声和轻声自然，句尾语气按中文习惯收束。语速中等偏自然，按中文语义短语断句，不要逐词停顿。不要使用英语式重音、夸张播音腔或外国人腔。口音控制不改变回答语言；不要因为用户口音切换语言。';
+const DEFAULT_TRANSLATION_INSTRUCTIONS='# 翻译约束\n翻译时优先保持专有名词、地名、人名和品牌名的官方常用译法，不要按字面误译或自行改写。若转写已明确识别出专有名词，翻译阶段应沿用该识别结果，并输出目标语言中的标准写法。示例：日本城市“横滨”翻译到英语时使用 “Yokohama”，翻译到日语时使用 “横浜”。';
 const btnMcpConfig = document.getElementById('btnMcpConfig');
 const mcpStatusEl = document.getElementById('mcpStatus');
 const DEFAULT_TEMPERATURE=0.7;
@@ -84,6 +86,18 @@ function setModelOptions(options, selected, task=getCurrentTaskType()){
 function setModelValue(value){ if(!modelInput) return; const normalized=normalizeModelValue(value); if(!normalized) return; const task=getCurrentTaskType(); if(modelInput.tagName==='SELECT' && !Array.from(modelInput.options).some(opt=>opt.value===normalized) && modelBelongsToTask(normalized, task)){ const opt=document.createElement('option'); opt.value=normalized; opt.textContent=normalized; modelInput.appendChild(opt); } if(modelInput.tagName!=='SELECT' || Array.from(modelInput.options).some(opt=>opt.value===normalized)) modelInput.value=normalized; }
 function getResolvedInputLanguage(){ return (inputLanguageInput?.value || 'auto').toString().trim(); }
 function getResolvedTargetLanguage(){ return (targetLanguageInput?.value || 'en').toString().trim(); }
+function updateInputLanguageUiState(task=getCurrentTaskType()){
+  if(!inputLanguageInput) return;
+  const usesInputLanguage=taskUsesInputLanguage(task);
+  const isAzureTranslation=usesInputLanguage && normalizeTaskType(task)==='translation' && isAzureRealtimeConfig();
+  inputLanguageInput.disabled=isAzureTranslation;
+  if(isAzureTranslation) inputLanguageInput.value='auto';
+  if(!inputLanguageNote) return;
+  if(!usesInputLanguage){ inputLanguageNote.textContent=''; return; }
+  if(normalizeTaskType(task)==='transcription') inputLanguageNote.textContent='可选语言提示；用于转写 session。';
+  else if(isAzureTranslation) inputLanguageNote.textContent='Azure 翻译不支持源语言字段，服务会自动识别。';
+  else inputLanguageNote.textContent='翻译通常自动识别源语言；输入语言只作为可选提示。';
+}
 function applyTaskUiState({selectedModel='', forceModel=false}={}){
   const task=getCurrentTaskType();
   if(taskTypeInput && taskTypeInput.value!==task) taskTypeInput.value=task;
@@ -92,6 +106,7 @@ function applyTaskUiState({selectedModel='', forceModel=false}={}){
   setFieldVisible(voiceField, taskUsesVoice(task));
   setFieldVisible(inputLanguageField, taskUsesInputLanguage(task));
   setFieldVisible(targetLanguageField, taskUsesTargetLanguage(task));
+  updateInputLanguageUiState(task);
   applyTaskConnectionState(task);
 }
 function normalizeVoiceValue(value){ return (value??'').toString().trim().toLowerCase(); }
@@ -111,8 +126,11 @@ function taskRequiresGa(task=getCurrentTaskType()){ return normalizeTaskType(tas
 function taskUsesConversationLifecycle(task=getCurrentTaskType()){ return normalizeTaskType(task)==='conversation'; }
 function normalizePayloadLanguage(value){ const lang=(value||'').toString().trim(); return lang && lang.toLowerCase()!=='auto' ? lang : ''; }
 function getTranslationTranscriptionModel(){ return normalizeModelValue(window._cfg?.translation_transcription_model || window._cfg?.transcription_model || defaultTranscriptionModel) || defaultTranscriptionModel; }
-function buildTranslationInputTranscription(){ const transcription={ model:getTranslationTranscriptionModel() }; const inputLanguage=normalizePayloadLanguage(getResolvedInputLanguage()); if(inputLanguage && !isAzureRealtimeConfig()) transcription.language=inputLanguage; return transcription; }
-function buildTranslationSessionUpdatePayload({ includeInputTranscription=true }={}){ const output={ language:normalizePayloadLanguage(getResolvedTargetLanguage()) || 'en' }; const audio={ output }; if(includeInputTranscription) audio.input={ transcription:buildTranslationInputTranscription() }; return { type:'session.update', session:{ audio } }; }
+function translationInputLanguageSupported(){ return !isAzureRealtimeConfig(); }
+function buildTranslationInputTranscription({ includeLanguage=translationInputLanguageSupported() }={}){ const transcription={ model:getTranslationTranscriptionModel() }; const inputLanguage=normalizePayloadLanguage(getResolvedInputLanguage()); if(inputLanguage && includeLanguage) transcription.language=inputLanguage; return transcription; }
+function getTranslationInstructions(){ const cfg=window._cfg||{}; const value=Object.prototype.hasOwnProperty.call(cfg,'translation_instructions') ? cfg.translation_instructions : DEFAULT_TRANSLATION_INSTRUCTIONS; return (value||'').toString().trim(); }
+function translationInstructionsSupported(){ return !isAzureRealtimeConfig(); }
+function buildTranslationSessionUpdatePayload({ includeInputTranscription=true, includeInputLanguage=translationInputLanguageSupported(), includeInstructions=translationInstructionsSupported() }={}){ const output={ language:normalizePayloadLanguage(getResolvedTargetLanguage()) || 'en' }; const audio={ output }; if(includeInputTranscription) audio.input={ transcription:buildTranslationInputTranscription({ includeLanguage:includeInputLanguage }) }; const session={ audio }; const instructions=getTranslationInstructions(); if(includeInstructions && instructions) session.instructions=instructions; return { type:'session.update', session }; }
 function buildRealtimeSessionUpdatePayload({ includeTools=true }={}){
   const task=getCurrentTaskType();
   if(task==='transcription'){
@@ -296,7 +314,7 @@ function handleConnectionClosed(msg){ if(wsAudioProc){ stopWsMicStreaming(false)
 // ---- Transcription (server events) ----
 function handleTranscriptionDelta(target,payload){ const chunk = payload?.delta || payload?.text || payload?.value; if(!chunk) return; if(!target._modelTrPartial) target._modelTrPartial=''; target._modelTrPartial+=chunk; if(!target._modelTrDiv){ target._modelTrDiv=document.createElement('div'); target._modelTrDiv.className='msg'; target._modelTrDiv.innerHTML='<span class="role">模型转写:</span><span class="partial"></span>'; logEl.appendChild(target._modelTrDiv);} target._modelTrDiv.querySelector('.partial').textContent=target._modelTrPartial; logEl.scrollTop=logEl.scrollHeight; }
 function handleTranscriptionCompleted(target,payload){ let finalText=target._modelTrPartial||''; const extra=payload?.text||payload?.transcript||''; if(!finalText && extra) finalText=extra; log('模型转写', finalText||'[完成]'); target._modelTrPartial=''; if(target._modelTrDiv){ target._modelTrDiv.remove(); target._modelTrDiv=null; } }
-function handleStreamingTextDelta(target,key,label,payload){ const chunk=payload?.delta || payload?.text || payload?.transcript || ''; if(!chunk) return; const partialKey='_'+key+'Partial'; const divKey='_'+key+'Div'; if(!target[partialKey]) target[partialKey]=''; target[partialKey]+=chunk; if(!target[divKey]){ target[divKey]=document.createElement('div'); target[divKey].className='msg'; target[divKey].innerHTML=`<span class="role">${label}:</span><span class="partial"></span>`; logEl.appendChild(target[divKey]); } target[divKey].querySelector('.partial').textContent=target[partialKey]; logEl.scrollTop=logEl.scrollHeight; }
+function handleStreamingTextDelta(target,key,label,payload){ const chunk=payload?.delta || payload?.text || payload?.transcript || ''; if(!chunk) return; const partialKey='_'+key+'Partial'; const divKey='_'+key+'Div'; const warnKey='_'+key+'MalformedWarned'; if(/\uFFFD/.test(chunk) && target && !target[warnKey]){ target[warnKey]=true; log('warn',label+'包含替换字符 �，这是上游实时转写返回的不确定字符，不是前端编码乱码'); } if(!target[partialKey]) target[partialKey]=''; target[partialKey]+=chunk; if(!target[divKey]){ target[divKey]=document.createElement('div'); target[divKey].className='msg'; target[divKey].innerHTML=`<span class="role">${label}:</span><span class="partial"></span>`; logEl.appendChild(target[divKey]); } target[divKey].querySelector('.partial').textContent=target[partialKey]; logEl.scrollTop=logEl.scrollHeight; }
 function flushStreamingText(target,key,label){ const partialKey='_'+key+'Partial'; const divKey='_'+key+'Div'; if(target?.[partialKey]) log(label,target[partialKey]); if(target?.[divKey]){ target[divKey].remove(); target[divKey]=null; } if(target) target[partialKey]=''; }
 
 async function readJsonOrRaw(resp){ const text=await resp.text(); if(!text) return {}; try{ return JSON.parse(text); }catch(_){ return { raw:text }; } }
@@ -386,6 +404,10 @@ function buildWebSocketProxyUrl(){
 }
 
 let ws=null; let wsActive=false; let wsFirstMessageTimer=null; let wsConnectedAt=0; let wsReceivedAny=false; let wsUrlLast=''; let secondarySessionUpdateSent=false; let wsInitialSessionIncludedTools=false;
+let translationSessionSupportsInputTranscription=true;
+let translationSessionSupportsInputLanguage=translationInputLanguageSupported();
+let translationSessionSupportsInstructions=!isAzureRealtimeConfig();
+function resetTranslationSessionCapabilities(){ translationSessionSupportsInputTranscription=true; translationSessionSupportsInputLanguage=translationInputLanguageSupported(); translationSessionSupportsInstructions=translationInstructionsSupported(); }
 window.__wsRef=()=>ws; // 简单全局引用供调试
 // Raw frame & event debug toggles
 let rawFrameDebug=false; // 默认关闭，可在控制台设 window.__rawFrameDebug=true 打开
@@ -413,6 +435,8 @@ function startWebSocket(){
     log('sys','WebSocket 连接 -> '+url+(useProxy?' (proxy)':''));
     try{
   ws=new WebSocket(connectUrl,['realtime']);
+  resetTranslationSessionCapabilities();
+  if(getCurrentTaskType()==='translation' && isAzureRealtimeConfig() && normalizePayloadLanguage(getResolvedInputLanguage())) log('warn','Azure realtime translations 不支持显式源语言字段，输入语言将由服务自动识别');
   // Outbound frame interceptor
   const _origSend=ws.send.bind(ws);
   ws.send=function(data){ try{ if(rawFrameDebug){ log('out', (typeof data==='string'? data.slice(0,800):'[binary]')); } }catch(_){ } return _origSend(data); };
@@ -552,11 +576,26 @@ function handleWsMessage(e){
         log('diag','response.cancel 被服务端忽略：当前已无活动响应');
         break;
       }
-      if(getCurrentTaskType()==='translation' && !ws._translationTranscriptionFallbackSent){
+      if(getCurrentTaskType()==='translation'){
         const text=stringifyForLog(msg.error||msg);
-        if(/transcription|audio\.input|input.*audio|unknown_parameter|invalid_request|validation/i.test(text)){
-          ws._translationTranscriptionFallbackSent=true;
-          try{ ws.send(JSON.stringify(buildTranslationSessionUpdatePayload({ includeInputTranscription:false }))); log('warn','翻译源转写配置被拒绝，已退回仅翻译输出模式'); }catch(_){ }
+        const param=(msg?.error?.param||'').toString();
+        let shouldRetry=false;
+        if(translationSessionSupportsInstructions && (/session\.instructions/i.test(param) || /session\.instructions/i.test(text))){
+          translationSessionSupportsInstructions=false;
+          shouldRetry=true;
+          log('warn','当前翻译链路不支持 session.instructions，已退回无术语指令模式');
+        }
+        if(translationSessionSupportsInputLanguage && (/language/i.test(param) || /language/i.test(text)) && /transcription|audio\.input|input.*audio/i.test(param+text)){
+          translationSessionSupportsInputLanguage=false;
+          shouldRetry=true;
+          log('warn','翻译源语言配置被拒绝，已退回自动识别输入语言');
+        } else if(translationSessionSupportsInputTranscription && (/transcription|audio\.input|input.*audio/i.test(param) || /transcription|audio\.input|input.*audio/i.test(text))){
+          translationSessionSupportsInputTranscription=false;
+          shouldRetry=true;
+          log('warn','翻译源转写配置被拒绝，已退回仅翻译输出模式');
+        }
+        if(shouldRetry){
+          try{ ws.send(JSON.stringify(buildTranslationSessionUpdatePayload({ includeInputTranscription:translationSessionSupportsInputTranscription, includeInputLanguage:translationSessionSupportsInputLanguage, includeInstructions:translationSessionSupportsInstructions }))); }catch(_){ }
         }
       }
       log('error', msg.error||msg);
@@ -841,7 +880,8 @@ function sendSessionUpdate(){ const target=(webrtcActive && dataChannel?.readySt
 
 function handleTaskTypeChanged(){ const task=getCurrentTaskType(); const configured=normalizeModelValue(window._cfg?.model || window._cfg?.deployment || ''); const selected=modelBelongsToTask(modelInput?.value, task) ? modelInput.value : (modelBelongsToTask(configured, task) ? configured : ''); applyTaskUiState({ selectedModel:selected, forceModel:true }); sendSessionUpdate(); }
 taskTypeInput?.addEventListener('change', handleTaskTypeChanged);
-[modelInput,tempInput,maxTokensInput,voiceInput,systemPromptInput,enableNativeWebSearchInput,inputLanguageInput,targetLanguageInput].forEach(el=> el && el.addEventListener('change',()=>sendSessionUpdate()));
+modelInput?.addEventListener('change',()=>{ applyTaskUiState({ selectedModel:modelInput.value, forceModel:false }); sendSessionUpdate(); });
+[tempInput,maxTokensInput,voiceInput,systemPromptInput,enableNativeWebSearchInput,inputLanguageInput,targetLanguageInput].forEach(el=> el && el.addEventListener('change',()=>sendSessionUpdate()));
 [enableServerTurnInput,serverTurnThresholdInput,serverTurnSilenceMsInput].forEach(el=> el && el.addEventListener('change',()=>sendSessionUpdate()));
 applyTaskUiState({ selectedModel:modelInput?.value || '', forceModel:false });
 

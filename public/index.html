@@ -26,6 +26,8 @@
     #audioOut { width:100%; height:46px; background:#161b22; border-top:1px solid #30363d; display:flex; align-items:center; padding:0 1rem; font-size:0.75rem; }
     #configPanel { padding:0.75rem 1rem; border-bottom:1px solid #30363d; display:flex; gap:0.75rem; flex-wrap:wrap; }
     label small { opacity:0.7; }
+    .field-note { display:block; margin-top:2px; max-width:15rem; color:#8b949e; font-size:0.68rem; line-height:1.25; }
+    select[disabled] { opacity:0.6; cursor:not-allowed; }
     input[type=number] { width:4.5rem; }
     input, select { background:#0d1117; color:#e6edf3; border:1px solid #30363d; border-radius:4px; padding:0.35rem 0.4rem; font-size:0.75rem; }
     /* Latency Panel */
@@ -100,6 +102,7 @@
       <option value="pt">Português</option>
       <option value="ar">العربية</option>
     </select>
+    <small id="inputLanguageNote" class="field-note"></small>
   </label>
   <label id="targetLanguageControl" hidden>目标语言
     <select id="targetLanguage" aria-label="目标语言">

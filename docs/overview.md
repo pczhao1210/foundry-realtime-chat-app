@@ -101,13 +101,13 @@ npm run dev
 - 实时转写：模型下拉使用 `gpt-realtime-whisper`。
 - 实时翻译：模型下拉使用 `gpt-realtime-translate` 或 `gpt-realtime-translation`。
 
-音色只在实时对话和实时翻译任务显示；输入语言只在转写/翻译显示，目标语言只在翻译显示。服务端会校验传入的模型/部署名和音色，避免手动输入拼写错误。
+音色只在实时对话和实时翻译任务显示；输入语言只在转写/翻译显示，目标语言只在翻译显示。输入语言是能力提示，不是所有任务都会发送：转写任务可把它作为 `audio.input.transcription.language` 的可选提示；OpenAI 翻译通常自动识别源语言；Azure Realtime translations 当前拒绝 `session.audio.input.transcription.language`，所以界面会禁用该下拉并提示由服务自动识别。服务端会校验传入的模型/部署名和音色，避免手动输入拼写错误。
 
 实时对话没有文档化的输出语言标签可配置项。如果中文听起来像外国人说中文，优先尝试不同内置音色，并通过 `system_prompt` 或 `speech_style_instructions` 明确要求“标准普通话、自然四声、中文语义断句”。这类提示能改善韵律，但不能等同于专用中文 TTS voice。
 
-Realtime 转写按官方 GA 协议使用 `session.type="transcription"`，`audio.input.transcription.model` 指向 `gpt-realtime-whisper` 部署，并省略/禁用 VAD 后手动提交音频。Azure 当前对 `gpt-realtime-whisper` 的普通 WebSocket `/realtime` 握手可能返回 `OpperationNotSupported`，浏览器路径会优先使用 GA WebRTC `client_secrets` / `calls`。
+Realtime 转写按官方 GA 协议使用 `session.type="transcription"`，`audio.input.transcription.model` 指向 `gpt-realtime-whisper` 部署，并省略/禁用 VAD 后手动提交音频。OpenAI 文档中 `audio.input.transcription.language` 是 optional language hint，例如 `en` 或 `zh`，不是必填项。Azure 当前对 `gpt-realtime-whisper` 的普通 WebSocket `/realtime` 握手可能返回 `OpperationNotSupported`，浏览器路径会优先使用 GA WebRTC `client_secrets` / `calls`。
 
-Realtime 翻译按官方协议是独立 session：WebSocket 使用 `/realtime/translations`，WebRTC 使用 `/realtime/translations/client_secrets` 和 `/realtime/translations/calls`；翻译流不发送 `response.create`，而是处理 `session.output_audio.delta`、`session.output_transcript.delta` 和 `session.input_transcript.delta`。源语言转写需要在 translation `session.update` 中启用 `audio.input.transcription` 并提供转写模型；Azure 当前接受 `model:gpt-realtime-whisper`，但会拒绝 `audio.input.transcription.language`，所以源语言由服务端自动识别。
+Realtime 翻译按官方协议是独立 session：WebSocket 使用 `/realtime/translations`，WebRTC 使用 `/realtime/translations/client_secrets` 和 `/realtime/translations/calls`；翻译流不发送 `response.create`，而是处理 `session.output_audio.delta`、`session.output_transcript.delta` 和 `session.input_transcript.delta`。官方翻译示例只配置 `audio.output.language` 作为目标语言；如需源转写字幕，可在 translation `session.update` 中启用 `audio.input.transcription` 并提供转写模型。Azure 当前接受 `model:gpt-realtime-whisper`，但会拒绝 `audio.input.transcription.language`，所以源语言由服务端自动识别。
 
 ## 工具配置
 

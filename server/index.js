@@ -25,6 +25,7 @@ const cfg = readJsonConfig(cfgPath, cfgExamplePath);
 const mcpCfgPath = path.join(rootDir,'config','mcp_config.json');
 const DEFAULT_AZURE_AUTH_SCOPE = 'https://cognitiveservices.azure.com/.default';
 const DEFAULT_SPEECH_STYLE_INSTRUCTIONS = '# 口音与语音风格\n中文回答时使用自然、清晰、稳定的标准普通话；四声和轻声自然，句尾语气按中文习惯收束。语速中等偏自然，按中文语义短语断句，不要逐词停顿。不要使用英语式重音、夸张播音腔或外国人腔。口音控制不改变回答语言；不要因为用户口音切换语言。';
+const DEFAULT_TRANSLATION_INSTRUCTIONS = '# 翻译约束\n翻译时优先保持专有名词、地名、人名和品牌名的官方常用译法，不要按字面误译或自行改写。若转写已明确识别出专有名词，翻译阶段应沿用该识别结果，并输出目标语言中的标准写法。示例：日本城市“横滨”翻译到英语时使用 “Yokohama”，翻译到日语时使用 “横浜”。';
 const REALTIME_MODEL_OPTIONS = Object.freeze([
   'gpt-realtime-1',
   'gpt-realtime-1.5',
@@ -549,6 +550,7 @@ function mergeInstructions(base, extra){
   return normalizedBase ? `${normalizedBase}\n\n${normalizedExtra}` : normalizedExtra;
 }
 function getSpeechStyleInstructions(){ const realtime=cfg.realtime||{}; const value=Object.prototype.hasOwnProperty.call(realtime,'speech_style_instructions') ? realtime.speech_style_instructions : DEFAULT_SPEECH_STYLE_INSTRUCTIONS; return (value||'').toString().trim(); }
+function getTranslationInstructions(){ const realtime=cfg.realtime||{}; const value=Object.prototype.hasOwnProperty.call(realtime,'translation_instructions') ? realtime.translation_instructions : DEFAULT_TRANSLATION_INSTRUCTIONS; return (value||'').toString().trim(); }
 function buildConversationInstructions(extra=''){ return mergeInstructions(mergeInstructions(cfg.realtime?.system_prompt, getSpeechStyleInstructions()), extra); }
 
 function buildBody(modelOverride, voiceOverride, { includeVoice=true }={}){ const b={ model:normalizeRealtimeModelName(modelOverride)||getRealtimeModelName(), modalities:cfg.realtime.modalities, temperature:cfg.realtime.temperature, max_response_output_tokens:cfg.realtime.max_response_output_tokens, instructions:buildConversationInstructions() }; if(includeVoice) b.voice=normalizeRealtimeVoiceName(voiceOverride)||getRealtimeVoiceName(); if(!b.model) delete b.model; if(!b.voice) delete b.voice; if(!b.instructions) delete b.instructions; return b; }
@@ -557,6 +559,7 @@ function getRequestedInputLanguage(req){ return normalizeLanguageCode(req.query.
 function getRequestedTargetLanguage(req){ return normalizeLanguageCode(req.query.target_language || req.query.targetLanguage) || 'en'; }
 function getTranslationTranscriptionModel(){ return normalizeRealtimeModelName(cfg.realtime?.translation_transcription_model || cfg.realtime?.translationTranscriptionModel || cfg.realtime?.transcription_model || cfg.realtime?.transcriptionModel || 'gpt-realtime-whisper') || 'gpt-realtime-whisper'; }
 function buildTranslationInputTranscription(inputLanguage){ const transcription={ model:getTranslationTranscriptionModel() }; if(inputLanguage && !isAzure()) transcription.language=inputLanguage; return transcription; }
+function translationInstructionsSupported(){ return !isAzure(); }
 function buildGaClientSecretEndpoint(task){ const base=(cfg.realtime?.endpoint||'').replace(/\/$/,''); if(!base) throw new Error('Missing realtime endpoint'); return base + (normalizeRealtimeTask(task)==='translation' ? '/openai/v1/realtime/translations/client_secrets' : '/openai/v1/realtime/client_secrets'); }
 function buildGaClientSecretBody(task, modelOverride, voiceOverride, req){
   const requestedTask=normalizeRealtimeTask(task);
@@ -568,7 +571,10 @@ function buildGaClientSecretBody(task, modelOverride, voiceOverride, req){
     return { session:{ type:'transcription', audio:{ input:{ format:{ type:'audio/pcm', rate:24000 }, transcription, turn_detection:null } } } };
   }
   if(requestedTask==='translation'){
-    return { session:{ model, audio:{ input:{ transcription:buildTranslationInputTranscription(inputLanguage) }, output:{ language:getRequestedTargetLanguage(req) } } } };
+    const session={ model, audio:{ input:{ transcription:buildTranslationInputTranscription(inputLanguage) }, output:{ language:getRequestedTargetLanguage(req) } } };
+    const instructions=getTranslationInstructions();
+    if(translationInstructionsSupported() && instructions) session.instructions=instructions;
+    return { session };
   }
   const session={ type:'realtime', model };
   const instructions=buildConversationInstructions();
@@ -697,6 +703,7 @@ app.get('/api/realtime-config', (req,res)=>{
     max_response_output_tokens:r.max_response_output_tokens,
     system_prompt:r.system_prompt,
     speech_style_instructions:getSpeechStyleInstructions(),
+    translation_instructions:getTranslationInstructions(),
     modalities:r.modalities,
     web_search:getWebSearchConfig(),
     // input_audio_transcription removed

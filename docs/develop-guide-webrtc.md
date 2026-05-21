@@ -144,6 +144,8 @@ translation init：
 }
 ```
 
+翻译 session 只需要声明目标语言 `audio.output.language`。`audio.input.transcription` 只用于让服务额外返回源语言字幕；OpenAI 文档没有要求声明源语言，Azure Realtime translations 当前还会拒绝 `session.audio.input.transcription.language`，因此不要在 Azure 翻译 payload 中发送该字段。
+
 transcription init：
 
 ```json
@@ -161,6 +163,8 @@ transcription init：
   }
 }
 ```
+
+转写 session 可以声明 `audio.input.transcription.language` 作为可选语言提示，例如 `{ "model": "gpt-realtime-whisper", "language": "zh" }`。这是 hint，不是必填项；只在目标端点确认支持时发送。
 
 ### 节点 J/K/L/M：按任务发输入
 
