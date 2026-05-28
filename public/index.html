@@ -55,27 +55,28 @@
       <option value="conversation">实时对话</option>
       <option value="transcription">实时转写</option>
       <option value="translation">实时翻译</option>
+      <option value="azure-cognitive">Azure认知服务</option>
     </select>
   </label>
-  <label>模型
+  <label id="modelControl">模型
     <select id="model" aria-label="模型">
       <option value="">(加载中)</option>
       <option value="gpt-realtime-1">gpt-realtime-1</option>
       <option value="gpt-realtime-1.5">gpt-realtime-1.5</option>
       <option value="gpt-realtime-2">gpt-realtime-2</option>
-      <option value="gpt-realtime-translation">gpt-realtime-translation</option>
+      <option value="gpt-realtime-translate">gpt-realtime-translate</option>
       <option value="gpt-realtime-whisper">gpt-realtime-whisper</option>
     </select>
   </label>
-  <label>连接类型
+  <label id="connectionTypeControl">连接类型
     <select id="connType">
       <option value="websocket" selected>WebSocket</option>
       <option value="webrtc">WebRTC</option>
     </select>
   </label>
-  <label><input type="checkbox" id="useGaPath" checked /> 使用 GA v1 路径</label>
-  <label>温度 <input id="temp" type="number" step="0.1" placeholder="-" /></label>
-  <label>最大Tokens <input id="maxTokens" type="number" placeholder="-" /></label>
+  <label id="gaPathControl"><input type="checkbox" id="useGaPath" checked /> 使用 GA v1 路径</label>
+  <label id="temperatureControl">温度 <input id="temp" type="number" step="0.1" placeholder="-" /></label>
+  <label id="maxTokensControl">最大Tokens <input id="maxTokens" type="number" placeholder="-" /></label>
   <label id="voiceControl">音色
     <select id="voice" aria-label="音色">
       <option value="alloy">alloy</option>
@@ -88,10 +89,23 @@
       <option value="verse">verse</option>
     </select>
   </label>
+  <label id="azureOutputControl" hidden>输出
+    <select id="azureOutputMode" aria-label="Azure认知服务输出">
+      <option value="transcription" selected>转写文本</option>
+      <option value="translation">翻译文本</option>
+    </select>
+    <small id="azureOutputNote" class="field-note"></small>
+  </label>
   <label id="inputLanguageControl" hidden>输入语言
     <select id="inputLanguage" aria-label="输入语言">
       <option value="auto" selected>自动</option>
       <option value="zh">中文</option>
+      <option value="zh-CN">普通话（中国大陆）</option>
+      <option value="zh-HK">粤语（香港）</option>
+      <option value="yue-CN">粤语（简体）</option>
+      <option value="zh-TW">国语（台湾）</option>
+      <option value="zh-CN-sichuan">四川话</option>
+      <option value="wuu-CN">吴语</option>
       <option value="en">English</option>
       <option value="ja">日本語</option>
       <option value="ko">한국어</option>
@@ -118,19 +132,31 @@
       <option value="ar">العربية</option>
     </select>
   </label>
-        <label style="flex:1 1 100%; display:flex; flex-direction:column; gap:2px;">
+        <label id="systemPromptControl" style="flex:1 1 100%; display:flex; flex-direction:column; gap:2px;">
           <span>系统Prompt <small>作为指令 (instructions)</small></span>
           <textarea id="systemPrompt" rows="2" placeholder="例如: 你是一名双语(中英文)实时对讲助手, 回答精炼。"></textarea>
         </label>
-  <label><input type="checkbox" id="enableServerTurn" checked /> 服务器断句</label>
-        <label>Turn阈值<input id="serverTurnThreshold" type="number" step="0.05" value="0.5" /></label>
-        <label>Turn静音(ms)<input id="serverTurnSilenceMs" type="number" value="650" /></label>
-        <label><input type="checkbox" id="enableLocalStt" /> 本地转写</label>
-        <label><input type="checkbox" id="autoSendStt" /> 自动发送转写</label>
-        <label><input type="checkbox" id="enableNativeWebSearch" /> 原生 Web Search</label>
+  <label id="serverTurnControl"><input type="checkbox" id="enableServerTurn" checked /> 服务器断句</label>
+        <label id="serverTurnThresholdControl">Turn阈值<input id="serverTurnThreshold" type="number" step="0.05" value="0.5" /></label>
+        <label id="serverTurnSilenceControl">Turn静音(ms)<input id="serverTurnSilenceMs" type="number" value="650" /></label>
+        <label id="sttProviderControl">辅助转写
+          <select id="sttProvider" aria-label="辅助转写">
+            <option value="none" selected>关闭</option>
+            <option value="browser">浏览器本地</option>
+          </select>
+          <small id="sttProviderNote" class="field-note"></small>
+        </label>
+        <input type="checkbox" id="enableLocalStt" hidden />
+        <label id="audioFileControl" hidden>音频文件
+          <input id="audioFileInput" type="file" accept="audio/*,.wav,.mp3,.m4a,.ogg,.webm" />
+          <button id="transcribeFileBtn" type="button" class="secondary">转写文件</button>
+          <small id="audioFileNote" class="field-note"></small>
+        </label>
+        <label id="autoSendSttControl"><input type="checkbox" id="autoSendStt" /> 自动发送转写</label>
+        <label id="nativeWebSearchControl"><input type="checkbox" id="enableNativeWebSearch" /> 原生 Web Search</label>
   <label><input type="checkbox" id="showLatencyPanel" /> 延迟面板</label>
   <label><input type="checkbox" id="enableLatencyLog" /> 延迟日志</label>
-        <div style="display:flex; align-items:center; gap:0.5rem;">
+        <div id="mcpControl" style="display:flex; align-items:center; gap:0.5rem;">
           <button id="btnMcpConfig" type="button" class="secondary" style="white-space:nowrap;">配置 MCP</button>
           <span id="mcpStatus" style="font-size:0.75rem; opacity:0.8;">MCP: 未启用</span>
           <button id="btnReloadCfg" type="button" class="secondary" style="white-space:nowrap;">刷新配置</button>
@@ -144,7 +170,7 @@
         <button id="micBtn" class="secondary" disabled>开始说话</button>
         <button id="sendTextBtn" class="secondary" disabled>发送文本</button>
       </div>
-      <div style="padding:0.5rem 1rem; border-top:1px solid #30363d;">
+      <div id="textInputPanel" style="padding:0.5rem 1rem; border-top:1px solid #30363d;">
         <textarea id="textInput" rows="2" placeholder="输入文字然后点击发送或按 Ctrl+Enter"></textarea>
       </div>
     </section>
@@ -174,6 +200,7 @@
       <button id="btnLatPin">固定</button>
     </footer>
   </div>
-  <script type="module" src="/app.js?v=20250926"></script>
+  <script src="https://aka.ms/csspeech/jsbrowserpackageraw"></script>
+  <script type="module" src="/app.js?v=20260528-azure-speech-fix"></script>
 </body>
 </html>

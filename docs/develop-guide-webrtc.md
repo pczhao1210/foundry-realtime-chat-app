@@ -5,7 +5,7 @@
 覆盖模型：
 
 - `gpt-realtime-2`（conversation）
-- `gpt-realtime-translate` / `gpt-realtime-translation`（translation）
+- `gpt-realtime-translate`（translation）
 - `gpt-realtime-whisper`（transcription）
 
 ## 1. 流程图

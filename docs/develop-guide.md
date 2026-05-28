@@ -15,7 +15,7 @@
 ## 适用模型
 
 - `gpt-realtime-2`（conversation）
-- `gpt-realtime-translate` / `gpt-realtime-translation`（translation）
+- `gpt-realtime-translate`（translation）
 - `gpt-realtime-whisper`（transcription）
 
 ## 共用配置建议

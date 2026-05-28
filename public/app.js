@@ -7,7 +7,7 @@
 //  - Establish WebRTC (audio + datachannel)
 //  - Send/receive conversation + audio events over datachannel
 //  - Optional server turn detection via session.update (server_vad)
-//  - Optional server-side transcription, optional local Web Speech API STT
+//  - Optional server-side transcription, optional browser/Azure Cognitive Speech STT
 
 // ---- DOM ----
 const logEl = document.getElementById('log');
@@ -26,10 +26,16 @@ const micBtn = document.getElementById('micBtn');
 const sendTextBtn = document.getElementById('sendTextBtn');
 const textInput = document.getElementById('textInput');
 const wave = document.getElementById('wave');
+const audioOutEl = document.getElementById('audioOut');
 const taskTypeInput = document.getElementById('taskType');
+const modelField = document.getElementById('modelControl');
 const modelInput = document.getElementById('model');
+const connectionTypeField = document.getElementById('connectionTypeControl');
 const connTypeSelect = document.getElementById('connType');
+const gaPathField = document.getElementById('gaPathControl');
+const temperatureField = document.getElementById('temperatureControl');
 const tempInput = document.getElementById('temp');
+const maxTokensField = document.getElementById('maxTokensControl');
 const maxTokensInput = document.getElementById('maxTokens');
 const voiceField = document.getElementById('voiceControl') || document.getElementById('voiceField');
 const voiceInput = document.getElementById('voice');
@@ -38,39 +44,66 @@ const inputLanguageInput = document.getElementById('inputLanguage');
 const inputLanguageNote = document.getElementById('inputLanguageNote');
 const targetLanguageField = document.getElementById('targetLanguageControl') || document.getElementById('targetLanguageField');
 const targetLanguageInput = document.getElementById('targetLanguage');
+const azureOutputField = document.getElementById('azureOutputControl');
+const azureOutputModeInput = document.getElementById('azureOutputMode');
+const azureOutputNote = document.getElementById('azureOutputNote');
+const systemPromptField = document.getElementById('systemPromptControl');
 const systemPromptInput = document.getElementById('systemPrompt');
+const serverTurnField = document.getElementById('serverTurnControl');
 const enableServerTurnInput = document.getElementById('enableServerTurn');
+const serverTurnThresholdField = document.getElementById('serverTurnThresholdControl');
 const serverTurnThresholdInput = document.getElementById('serverTurnThreshold');
+const serverTurnSilenceField = document.getElementById('serverTurnSilenceControl');
 const serverTurnSilenceMsInput = document.getElementById('serverTurnSilenceMs');
 const enableLocalStt = document.getElementById('enableLocalStt');
+const sttProviderField = document.getElementById('sttProviderControl');
+const sttProviderInput = document.getElementById('sttProvider');
+const sttProviderNote = document.getElementById('sttProviderNote');
+const audioFileField = document.getElementById('audioFileControl');
+const audioFileInput = document.getElementById('audioFileInput');
+const transcribeFileBtn = document.getElementById('transcribeFileBtn');
+const audioFileNote = document.getElementById('audioFileNote');
+const autoSendSttField = document.getElementById('autoSendSttControl');
 const autoSendStt = document.getElementById('autoSendStt');
+const nativeWebSearchField = document.getElementById('nativeWebSearchControl');
 const enableNativeWebSearchInput = document.getElementById('enableNativeWebSearch');
+const textInputPanel = document.getElementById('textInputPanel');
 // 模型端转写暂时禁用（unknown_parameter: session.input_audio_transcription）
 const enableModelTranscription = { checked:false };
 const modelTranscriptionLang = { value:'auto' };
 const defaultTranscriptionModel = 'gpt-realtime-whisper';
-const DEFAULT_MODEL_OPTIONS=['gpt-realtime-1','gpt-realtime-1.5','gpt-realtime-2','gpt-realtime-translate','gpt-realtime-translation','gpt-realtime-whisper'];
+const DEFAULT_MODEL_OPTIONS=['gpt-realtime-1','gpt-realtime-1.5','gpt-realtime-2','gpt-realtime-translate','gpt-realtime-whisper'];
 const TASK_MODEL_OPTIONS={
   conversation:['gpt-realtime-1','gpt-realtime-1.5','gpt-realtime-2'],
   transcription:['gpt-realtime-whisper'],
-  translation:['gpt-realtime-translate','gpt-realtime-translation']
+  translation:['gpt-realtime-translate'],
+  'azure-cognitive':[]
 };
 const DEFAULT_VOICE_OPTIONS=['alloy','ash','ballad','coral','echo','sage','shimmer','verse'];
 const DEFAULT_SPEECH_STYLE_INSTRUCTIONS='# 口音与语音风格\n中文回答时使用自然、清晰、稳定的标准普通话；四声和轻声自然，句尾语气按中文习惯收束。语速中等偏自然，按中文语义短语断句，不要逐词停顿。不要使用英语式重音、夸张播音腔或外国人腔。口音控制不改变回答语言；不要因为用户口音切换语言。';
 const DEFAULT_TRANSLATION_INSTRUCTIONS='# 翻译约束\n翻译时优先保持专有名词、地名、人名和品牌名的官方常用译法，不要按字面误译或自行改写。若转写已明确识别出专有名词，翻译阶段应沿用该识别结果，并输出目标语言中的标准写法。示例：日本城市“横滨”翻译到英语时使用 “Yokohama”，翻译到日语时使用 “横浜”。';
+const AZURE_SPEECH_LANGUAGE_MAP={ auto:'', zh:'zh-CN', 'zh-CN':'zh-CN', 'zh-HK':'zh-HK', 'yue-CN':'yue-CN', 'zh-TW':'zh-TW', 'zh-CN-sichuan':'zh-CN-sichuan', 'wuu-CN':'wuu-CN', en:'en-US', ja:'ja-JP', ko:'ko-KR', fr:'fr-FR', de:'de-DE', es:'es-ES', it:'it-IT', pt:'pt-BR', ar:'ar-SA' };
+const REALTIME_INPUT_LANGUAGE_MAP={ 'zh-CN':'zh', 'zh-HK':'zh', 'yue-CN':'zh', 'zh-TW':'zh', 'zh-CN-sichuan':'zh', 'wuu-CN':'zh' };
 const btnMcpConfig = document.getElementById('btnMcpConfig');
 const mcpStatusEl = document.getElementById('mcpStatus');
+const mcpField = document.getElementById('mcpControl');
 const DEFAULT_TEMPERATURE=0.7;
 function safeNumber(val, fallback){ if(val===undefined||val===null||val==='') return fallback; const n=Number(val); return (Number.isFinite(n)? n : fallback); }
 function isManagedIdentityMode(){ return (window._cfg?.auth_mode||'').toString().toLowerCase()==='managed-identity'; }
 function normalizeModelValue(value){ return (value??'').toString().trim(); }
 function mergeModelOptions(options, selected){ const merged=[]; [...(Array.isArray(options)?options:DEFAULT_MODEL_OPTIONS), selected].forEach(item=>{ const value=normalizeModelValue(item); if(value && !merged.includes(value)) merged.push(value); }); return merged.length?merged:DEFAULT_MODEL_OPTIONS.slice(); }
 function normalizeTaskType(value){ const normalized=(value||'conversation').toString().trim().toLowerCase(); return Object.prototype.hasOwnProperty.call(TASK_MODEL_OPTIONS, normalized) ? normalized : 'conversation'; }
-function inferTaskFromModel(model){ const normalized=normalizeModelValue(model).toLowerCase(); if(normalized.includes('translation') || normalized.includes('translate')) return 'translation'; if(normalized.includes('whisper') || normalized.includes('transcrib')) return 'transcription'; return 'conversation'; }
+function inferTaskFromModel(model){ const normalized=normalizeModelValue(model).toLowerCase(); if(normalized.includes('translate')) return 'translation'; if(normalized.includes('whisper') || normalized.includes('transcrib')) return 'transcription'; return 'conversation'; }
 function getCurrentTaskType(){ return normalizeTaskType(taskTypeInput?.value || inferTaskFromModel(modelInput?.value || window._cfg?.model || window._cfg?.deployment)); }
-function taskUsesVoice(task=getCurrentTaskType()){ return normalizeTaskType(task)!=='transcription'; }
-function taskUsesInputLanguage(task=getCurrentTaskType()){ return ['transcription','translation'].includes(normalizeTaskType(task)); }
-function taskUsesTargetLanguage(task=getCurrentTaskType()){ return normalizeTaskType(task)==='translation'; }
+function taskUsesRealtime(task=getCurrentTaskType()){ return normalizeTaskType(task)!=='azure-cognitive'; }
+function taskUsesAzureCognitive(task=getCurrentTaskType()){ return normalizeTaskType(task)==='azure-cognitive'; }
+function getAzureOutputMode(){ const mode=(azureOutputModeInput?.value||'transcription').toString().trim().toLowerCase(); return mode==='translation' ? 'translation' : 'transcription'; }
+function azureUsesTargetLanguage(task=getCurrentTaskType()){ return taskUsesAzureCognitive(task) && getAzureOutputMode()==='translation'; }
+function taskUsesVoice(task=getCurrentTaskType()){ return ['conversation','translation'].includes(normalizeTaskType(task)); }
+function taskUsesInputLanguage(task=getCurrentTaskType()){ return ['transcription','translation','azure-cognitive'].includes(normalizeTaskType(task)); }
+function taskUsesTargetLanguage(task=getCurrentTaskType()){ return normalizeTaskType(task)==='translation' || azureUsesTargetLanguage(task); }
+function taskUsesConversationControls(task=getCurrentTaskType()){ return normalizeTaskType(task)==='conversation'; }
+function taskUsesSidecarStt(task=getCurrentTaskType()){ return normalizeTaskType(task)==='conversation'; }
 function isAzureRealtimeConfig(){ return ((window._cfg?.provider||'').toString().toLowerCase()==='azure') || /azure\.com/i.test(window._cfg?.endpoint||''); }
 function applyTaskConnectionState(task){ const normalized=normalizeTaskType(task); if(!isAzureRealtimeConfig() || !connTypeSelect) return; if(normalized==='transcription' && connTypeSelect.value==='websocket'){ connTypeSelect.value='webrtc'; log('sys','Azure 转写任务使用 GA WebRTC 路径，已切换连接方式'); } if(normalized==='translation' && connTypeSelect.value==='webrtc'){ connTypeSelect.value='websocket'; log('sys','Azure 翻译任务使用 WebSocket translations 路径，已切换连接方式'); } }
 function setFieldVisible(field, visible){ if(!field) return; field.hidden=!visible; field.style.display=visible?'':'none'; }
@@ -95,6 +128,7 @@ function updateInputLanguageUiState(task=getCurrentTaskType()){
   if(!inputLanguageNote) return;
   if(!usesInputLanguage){ inputLanguageNote.textContent=''; return; }
   if(normalizeTaskType(task)==='transcription') inputLanguageNote.textContent='可选语言提示；用于转写 session。';
+  else if(normalizeTaskType(task)==='azure-cognitive') inputLanguageNote.textContent='Azure Speech 识别语言；自动时使用 speech.language 默认值。';
   else if(isAzureTranslation) inputLanguageNote.textContent='Azure 翻译不支持源语言字段，服务会自动识别。';
   else inputLanguageNote.textContent='翻译通常自动识别源语言；输入语言只作为可选提示。';
 }
@@ -103,11 +137,29 @@ function applyTaskUiState({selectedModel='', forceModel=false}={}){
   if(taskTypeInput && taskTypeInput.value!==task) taskTypeInput.value=task;
   const modelCandidate=forceModel ? selectedModel : (modelInput?.value || selectedModel);
   setModelOptions(window._cfg?.model_options, modelCandidate, task);
+  setFieldVisible(modelField, taskUsesRealtime(task));
+  setFieldVisible(connectionTypeField, taskUsesRealtime(task));
+  setFieldVisible(gaPathField, taskUsesRealtime(task));
   setFieldVisible(voiceField, taskUsesVoice(task));
+  setFieldVisible(audioOutEl, taskUsesVoice(task));
   setFieldVisible(inputLanguageField, taskUsesInputLanguage(task));
   setFieldVisible(targetLanguageField, taskUsesTargetLanguage(task));
+  setFieldVisible(azureOutputField, taskUsesAzureCognitive(task));
+  setFieldVisible(systemPromptField, taskUsesConversationControls(task));
+  setFieldVisible(temperatureField, taskUsesConversationControls(task));
+  setFieldVisible(maxTokensField, taskUsesConversationControls(task));
+  setFieldVisible(serverTurnField, taskUsesConversationControls(task));
+  setFieldVisible(serverTurnThresholdField, taskUsesConversationControls(task));
+  setFieldVisible(serverTurnSilenceField, taskUsesConversationControls(task));
+  setFieldVisible(nativeWebSearchField, taskUsesConversationControls(task));
+  setFieldVisible(mcpField, taskUsesConversationControls(task));
+  setFieldVisible(textInputPanel, taskUsesConversationControls(task));
+  setFieldVisible(sttProviderField, taskUsesSidecarStt(task));
+  updateSttProviderUiState(task);
   updateInputLanguageUiState(task);
+  updateAzureOutputUiState(task);
   applyTaskConnectionState(task);
+  applyControlAvailabilityForTask(task);
 }
 function normalizeVoiceValue(value){ return (value??'').toString().trim().toLowerCase(); }
 function mergeVoiceOptions(options, selected){ const merged=[]; [...(Array.isArray(options)?options:DEFAULT_VOICE_OPTIONS), selected].forEach(item=>{ const value=normalizeVoiceValue(item); if(value && !merged.includes(value)) merged.push(value); }); return merged.length?merged:DEFAULT_VOICE_OPTIONS.slice(); }
@@ -125,9 +177,10 @@ function getResolvedRealtimeVoice(){ if(!taskUsesVoice()) return ''; return norm
 function taskRequiresGa(task=getCurrentTaskType()){ return normalizeTaskType(task)!=='conversation'; }
 function taskUsesConversationLifecycle(task=getCurrentTaskType()){ return normalizeTaskType(task)==='conversation'; }
 function normalizePayloadLanguage(value){ const lang=(value||'').toString().trim(); return lang && lang.toLowerCase()!=='auto' ? lang : ''; }
+function getRealtimeInputLanguage(){ const lang=normalizePayloadLanguage(getResolvedInputLanguage()); return REALTIME_INPUT_LANGUAGE_MAP[lang] || lang; }
 function getTranslationTranscriptionModel(){ return normalizeModelValue(window._cfg?.translation_transcription_model || window._cfg?.transcription_model || defaultTranscriptionModel) || defaultTranscriptionModel; }
 function translationInputLanguageSupported(){ return !isAzureRealtimeConfig(); }
-function buildTranslationInputTranscription({ includeLanguage=translationInputLanguageSupported() }={}){ const transcription={ model:getTranslationTranscriptionModel() }; const inputLanguage=normalizePayloadLanguage(getResolvedInputLanguage()); if(inputLanguage && includeLanguage) transcription.language=inputLanguage; return transcription; }
+function buildTranslationInputTranscription({ includeLanguage=translationInputLanguageSupported() }={}){ const transcription={ model:getTranslationTranscriptionModel() }; const inputLanguage=getRealtimeInputLanguage(); if(inputLanguage && includeLanguage) transcription.language=inputLanguage; return transcription; }
 function getTranslationInstructions(){ const cfg=window._cfg||{}; const value=Object.prototype.hasOwnProperty.call(cfg,'translation_instructions') ? cfg.translation_instructions : DEFAULT_TRANSLATION_INSTRUCTIONS; return (value||'').toString().trim(); }
 function translationInstructionsSupported(){ return !isAzureRealtimeConfig(); }
 function buildTranslationSessionUpdatePayload({ includeInputTranscription=true, includeInputLanguage=translationInputLanguageSupported(), includeInstructions=translationInstructionsSupported() }={}){ const output={ language:normalizePayloadLanguage(getResolvedTargetLanguage()) || 'en' }; const audio={ output }; if(includeInputTranscription) audio.input={ transcription:buildTranslationInputTranscription({ includeLanguage:includeInputLanguage }) }; const session={ audio }; const instructions=getTranslationInstructions(); if(includeInstructions && instructions) session.instructions=instructions; return { type:'session.update', session }; }
@@ -135,7 +188,7 @@ function buildRealtimeSessionUpdatePayload({ includeTools=true }={}){
   const task=getCurrentTaskType();
   if(task==='transcription'){
     const transcription={ model:getResolvedRealtimeModel() || defaultTranscriptionModel };
-    const inputLanguage=normalizePayloadLanguage(getResolvedInputLanguage());
+    const inputLanguage=getRealtimeInputLanguage();
     if(inputLanguage) transcription.language=inputLanguage;
     return { type:'session.update', session:{ type:'transcription', audio:{ input:{ format:{ type:'audio/pcm', rate:AUDIO_SAMPLE_RATE }, transcription, turn_detection:null } } } };
   }
@@ -157,6 +210,7 @@ function buildRealtimeSessionUpdatePayload({ includeTools=true }={}){
 }
 let mcpConfig=null;
 let webSearchConfig={ enabled:false, type:'web_search', allowed_domains:[], user_location:null };
+let speechConfig={ provider:'none', azure_cognitive:{ enabled:false, configured:false, region:'', language:'zh-CN' } };
 function buildMicCaptureConstraints(){ return { audio:{ echoCancellation:true, noiseSuppression:true, autoGainControl:true, channelCount:1 } }; }
 function getConfiguredMcpServers(){ const servers=Array.isArray(mcpConfig?.servers) ? mcpConfig.servers.filter(server=>server && typeof server==='object') : (mcpConfig && mcpConfig.serverUrl ? [mcpConfig] : []); return servers.filter(server=>server.serverUrl || server.serverLabel || server.serverDescription || server.projectConnectionId || server.authorization || sanitizeList(server.allowedTools).length || (server.headers && Object.keys(server.headers).length)); }
 function updateMcpStatus(){ if(!mcpStatusEl) return; const servers=getConfiguredMcpServers(); if(!servers.length){ mcpStatusEl.textContent='MCP: 未配置'; return; } const enabledServers=servers.filter(server=>server.enabled && server.serverUrl); if(!enabledServers.length){ mcpStatusEl.textContent=`MCP: 已保存 ${servers.length} 个(未启用)`; return; } if(enabledServers.length===1){ const server=enabledServers[0]; const label=server.serverLabel||server.serverUrl; mcpStatusEl.textContent=`MCP: ${label}`; return; } mcpStatusEl.textContent=`MCP: 已启用 ${enabledServers.length} 个`; }
@@ -200,6 +254,76 @@ function getSpeechStyleInstructions(){ const cfg=window._cfg||{}; const value=Ob
 function buildConversationInstructions(base, extra=''){ return mergeInstructions(mergeInstructions(base, getSpeechStyleInstructions()), extra); }
 function stringifyForLog(value){ try{ return JSON.stringify(value,(key,val)=>{ if(/authorization|api[-_]?key|access[_-]?token|client[_-]?secret|secret|password/i.test(key)) return val ? '[redacted]' : val; if(typeof val==='string' && /^Bearer\s+/i.test(val)) return 'Bearer [redacted]'; return val; }); }catch(_){ return '[无法序列化]'; } }
 function logRealtimeTools(tools){ if(!Array.isArray(tools)||!tools.length){ log('sys','工具已禁用'); return; } const labels=tools.map(tool=>tool.type==='mcp' ? `MCP:${tool.server_label||tool.server_url}` : tool.type); log('sys','工具已启用: '+labels.join(', ')); }
+function normalizeSttProvider(value){ const provider=(value||'none').toString().trim().toLowerCase(); return ['none','browser'].includes(provider) ? provider : 'none'; }
+function getSelectedSttProvider(){ if(taskUsesAzureCognitive()) return 'azure-cognitive'; return normalizeSttProvider(sttProviderInput?.value || (enableLocalStt?.checked ? 'browser' : 'none')); }
+function syncLegacySttCheckbox(){ if(enableLocalStt) enableLocalStt.checked=getSelectedSttProvider()==='browser'; }
+function getAzureSpeechSettings(){ return speechConfig?.azure_cognitive || {}; }
+function isAzureSpeechConfigured(){ const azure=getAzureSpeechSettings(); return Boolean(azure.configured || azure.enabled); }
+function updateAudioFileUiState(task=getCurrentTaskType()){
+  const provider=getSelectedSttProvider();
+  const visible=taskUsesAzureCognitive(task);
+  setFieldVisible(audioFileField, visible);
+  const hasFile=Boolean(audioFileInput?.files?.length);
+  const configured=isAzureSpeechConfigured();
+  const canUseFileStt=visible && provider==='azure-cognitive' && configured;
+  if(transcribeFileBtn) transcribeFileBtn.textContent=getAzureOutputMode()==='translation' ? '翻译文件' : '转写文件';
+  if(audioFileInput) audioFileInput.disabled=!canUseFileStt;
+  if(transcribeFileBtn) transcribeFileBtn.disabled=!canUseFileStt || !hasFile || isFileTranscriptionActive;
+  if(audioFileNote){
+    if(!visible) audioFileNote.textContent='';
+    else if(!configured) audioFileNote.textContent='需要先配置 Azure Speech token。';
+    else if(!hasFile) audioFileNote.textContent=getAzureOutputMode()==='translation' ? '上传音频后输出目标语言文本。' : '支持常见音频文件；浏览器会转成 Speech SDK 可识别的 WAV。';
+    else audioFileNote.textContent=audioFileInput.files[0]?.name || '';
+  }
+}
+function updateAzureOutputUiState(task=getCurrentTaskType()){
+  if(!azureOutputNote) return;
+  if(!taskUsesAzureCognitive(task)){ azureOutputNote.textContent=''; return; }
+  azureOutputNote.textContent=getAzureOutputMode()==='translation' ? '选择目标语言；输入语言可保持自动。' : '输出原语音转写文本；输入语言可保持自动。';
+}
+function updateSttProviderUiState(task=getCurrentTaskType()){
+  const provider=getSelectedSttProvider();
+  syncLegacySttCheckbox();
+  const sidecarVisible=taskUsesSidecarStt(task);
+  if(sttProviderInput) sttProviderInput.disabled=!sidecarVisible;
+  if(autoSendStt) autoSendStt.disabled=provider==='none' || !taskUsesConversationControls(task);
+  setFieldVisible(autoSendSttField, sidecarVisible && provider!=='none' && taskUsesConversationControls(task));
+  updateAudioFileUiState(task);
+  if(!sttProviderNote) return;
+  if(!sidecarVisible){ sttProviderNote.textContent=''; return; }
+  if(provider==='browser') sttProviderNote.textContent='使用浏览器 Web Speech API。';
+  else sttProviderNote.textContent='';
+}
+function updateAzureTaskNote(task=getCurrentTaskType()){
+  if(!taskUsesAzureCognitive(task)) return;
+  const azure=getAzureSpeechSettings();
+  if(isAzureSpeechConfigured()) log('sys',`Azure认知服务已配置${azure.region?` (${azure.region})`:''}`);
+}
+function applyControlAvailabilityForTask(task=getCurrentTaskType()){
+  if(taskUsesAzureCognitive(task)){
+    setFieldVisible(connectBtn, false);
+    setFieldVisible(disconnectBtn, false);
+    setFieldVisible(sendTextBtn, false);
+    setFieldVisible(micBtn, true);
+    if(connectBtn) connectBtn.disabled=true;
+    if(disconnectBtn) disconnectBtn.disabled=true;
+    if(micBtn) micBtn.disabled=false;
+    if(sendTextBtn) sendTextBtn.disabled=true;
+    setStatus('Azure认知服务');
+    return;
+  }
+  setFieldVisible(connectBtn, true);
+  setFieldVisible(disconnectBtn, true);
+  setFieldVisible(sendTextBtn, taskUsesConversationControls(task));
+  setFieldVisible(micBtn, true);
+  if(!webrtcActive && !wsActive){
+    if(connectBtn) connectBtn.disabled=false;
+    if(disconnectBtn) disconnectBtn.disabled=true;
+    if(micBtn) micBtn.disabled=true;
+    if(sendTextBtn) sendTextBtn.disabled=true;
+    setStatus('未连接');
+  }
+}
 // ---- Config hydration ----
 let initialConfigLoaded=false;
 // ---- UI Helpers (moved earlier so hydrateConfig can use log) ----
@@ -227,6 +351,7 @@ function applyConfig(c,{force=false}={}){
   const assignments=[];
   if(modelInput){ const configuredModel=normalizeModelValue(c.model||c.deployment||''); const shouldApplyModel=force || !initialConfigLoaded || !modelInput.value; const selectedModel=shouldApplyModel ? configuredModel : modelInput.value; const inferredTask=inferTaskFromModel(selectedModel || configuredModel); if(taskTypeInput && (force || !initialConfigLoaded || !taskTypeInput.value)) taskTypeInput.value=inferredTask; const beforeModel=modelInput.value; setModelOptions(c.model_options, selectedModel, getCurrentTaskType()); if(shouldApplyModel) setModelValue(configuredModel); applyTaskUiState({ selectedModel:modelInput.value, forceModel:false }); if(modelInput.value && (modelInput.value!==beforeModel || shouldApplyModel)) assignments.push('model='+modelInput.value); }
   if(c.web_search && typeof c.web_search==='object'){ webSearchConfig={ enabled:!!c.web_search.enabled, type:normalizeHostedToolType(c.web_search.type), allowed_domains:sanitizeList(c.web_search.allowed_domains), user_location:c.web_search.user_location||null }; if(enableNativeWebSearchInput && (force || !initialConfigLoaded)) enableNativeWebSearchInput.checked=webSearchConfig.enabled; }
+  if(c.speech && typeof c.speech==='object'){ speechConfig=c.speech; const configuredProvider=normalizeSttProvider(c.speech.provider); if(sttProviderInput && (force || !initialConfigLoaded) && configuredProvider!=='none') sttProviderInput.value=configuredProvider; updateSttProviderUiState(); }
   if(voiceInput){ const configuredVoice=normalizeVoiceValue(c.voice||''); const shouldApplyVoice=force || !initialConfigLoaded || !voiceInput.value; const selectedVoice=shouldApplyVoice ? configuredVoice : voiceInput.value; const beforeVoice=voiceInput.value; setVoiceOptions(c.voice_options, selectedVoice); if(shouldApplyVoice) setVoiceValue(configuredVoice); if(voiceInput.value && (voiceInput.value!==beforeVoice || shouldApplyVoice)) assignments.push('voice='+voiceInput.value); }
   if(force || (!tempInput.value && (c.temperature!==undefined))){ tempInput.value=(c.temperature!==undefined? c.temperature : ''); assignments.push('temp='+tempInput.value); }
   if(force || (!maxTokensInput.value && c.max_response_output_tokens)){ maxTokensInput.value=c.max_response_output_tokens||''; assignments.push('max_tokens='+maxTokensInput.value); }
@@ -258,7 +383,7 @@ document.getElementById('btnResetCfg')?.addEventListener('click',()=>{ if(window
 // ---- State ----
 let sessionInfo=null; let pc=null; let dataChannel=null; let remoteAudioEl=null; let webrtcKey=null; let webrtcActive=false;
 let activeConnType=null; // 'websocket' | 'webrtc'
-let audioStream=null; let isRecording=false; let recognition=null; let sttActive=false; let transcriptionModel=defaultTranscriptionModel; let activeResponse=false;
+let audioStream=null; let isRecording=false; let recognition=null; let azureSpeechRecognizer=null; let sttActive=false; let activeSttProvider='none'; let sttInterimDiv=null; let speechSdkLoadPromise=null; let isFileTranscriptionActive=false; let transcriptionModel=defaultTranscriptionModel; let activeResponse=false;
 const AUDIO_SAMPLE_RATE=24000; let audioPlayCtx=null; let audioPlayHead=0; let audioTranscriptPartial=''; let _audioTranscriptDivPartial=null;
 let analyser=null; let audioCtxVis=null; let rafId=null; let remoteOutputCtx=null; let remoteOutputSource=null; let remoteOutputAnalyser=null; let remoteOutputRafId=null;
 // Response tracking (for cancellation)
@@ -309,7 +434,7 @@ window.printLatencySummary=()=>{ if(!latencyHistory.length){ console.log('无延
 
 for(let i=0;i<48;i++){ const bar=document.createElement('div'); wave.appendChild(bar);} // simple visualizer bars
 
-function handleConnectionClosed(msg){ if(wsAudioProc){ stopWsMicStreaming(false); } if(isRecording) stopRecording(); stopRemoteOutputMonitor(); webrtcActive=false; wsActive=false; activeConnType=null; pc=null; dataChannel=null; sessionInfo=null; webrtcKey=null; activeResponse=false; activeResponseId=null; assistantAudioStreaming=false; responseCancellable=false; cancelInFlight=false; responseCreatedAt=0; secondarySessionUpdateSent=false; wsInitialSessionIncludedTools=false; if(wsFirstMessageTimer){ clearTimeout(wsFirstMessageTimer); wsFirstMessageTimer=null; } if(mcpFollowupTimer){ clearTimeout(mcpFollowupTimer); mcpFollowupTimer=null; } if(remoteAudioEl){ try{remoteAudioEl.srcObject=null;}catch(_){} remoteAudioEl.remove(); remoteAudioEl=null; } connectBtn.disabled=false; disconnectBtn.disabled=true; micBtn.disabled=true; sendTextBtn.disabled=true; setStatus('已断开'); if(msg) log('sys',msg); }
+function handleConnectionClosed(msg){ if(wsAudioProc){ stopWsMicStreaming(false); } if(isRecording) stopRecording(); stopRemoteOutputMonitor(); webrtcActive=false; wsActive=false; activeConnType=null; pc=null; dataChannel=null; sessionInfo=null; webrtcKey=null; activeResponse=false; activeResponseId=null; assistantAudioStreaming=false; responseCancellable=false; cancelInFlight=false; responseCreatedAt=0; secondarySessionUpdateSent=false; wsInitialSessionIncludedTools=false; if(wsFirstMessageTimer){ clearTimeout(wsFirstMessageTimer); wsFirstMessageTimer=null; } if(mcpFollowupTimer){ clearTimeout(mcpFollowupTimer); mcpFollowupTimer=null; } if(remoteAudioEl){ try{remoteAudioEl.srcObject=null;}catch(_){} remoteAudioEl.remove(); remoteAudioEl=null; } connectBtn.disabled=false; disconnectBtn.disabled=true; micBtn.disabled=true; sendTextBtn.disabled=true; setStatus('已断开'); applyControlAvailabilityForTask(getCurrentTaskType()); if(msg) log('sys',msg); }
 
 // ---- Transcription (server events) ----
 function handleTranscriptionDelta(target,payload){ const chunk = payload?.delta || payload?.text || payload?.value; if(!chunk) return; if(!target._modelTrPartial) target._modelTrPartial=''; target._modelTrPartial+=chunk; if(!target._modelTrDiv){ target._modelTrDiv=document.createElement('div'); target._modelTrDiv.className='msg'; target._modelTrDiv.innerHTML='<span class="role">模型转写:</span><span class="partial"></span>'; logEl.appendChild(target._modelTrDiv);} target._modelTrDiv.querySelector('.partial').textContent=target._modelTrPartial; logEl.scrollTop=logEl.scrollHeight; }
@@ -329,7 +454,7 @@ async function createSession(){
   const params=new URLSearchParams({ mode, use_v1:useGa?'1':'0', task });
   if(selectedModel) params.set('model', selectedModel);
   if(selectedVoice) params.set('voice', selectedVoice);
-  if(taskUsesInputLanguage(task) && getResolvedInputLanguage() && getResolvedInputLanguage()!=='auto') params.set('input_language', getResolvedInputLanguage());
+  if(taskUsesInputLanguage(task) && getRealtimeInputLanguage()) params.set('input_language', getRealtimeInputLanguage());
   if(taskUsesTargetLanguage(task) && getResolvedTargetLanguage()) params.set('target_language', getResolvedTargetLanguage());
   const url = '/api/realtime-session?'+params.toString();
   const r=await fetch(url);
@@ -367,7 +492,7 @@ function stopRemoteOutputMonitor(){ if(remoteOutputRafId){ cancelAnimationFrame(
 function startRemoteOutputMonitor(stream){ stopRemoteOutputMonitor(); if(!stream) return; try{ remoteOutputCtx=new (window.AudioContext||window.webkitAudioContext)(); remoteOutputSource=remoteOutputCtx.createMediaStreamSource(stream); remoteOutputAnalyser=remoteOutputCtx.createAnalyser(); remoteOutputAnalyser.fftSize=512; remoteOutputSource.connect(remoteOutputAnalyser); remoteOutputCtx.resume?.().catch(()=>{}); const data=new Uint8Array(remoteOutputAnalyser.fftSize); const tick=()=>{ if(!remoteOutputAnalyser) return; remoteOutputAnalyser.getByteTimeDomainData(data); let sumSq=0; for(let i=0;i<data.length;i++){ const sample=(data[i]-128)/128; sumSq+=sample*sample; } const rms=Math.sqrt(sumSq/data.length); if(rms>0.012 && latencyCurrentTurn && !latencyCurrentTurn.tFirstAudioPlay && (activeResponse||activeResponseId||responseCreatedAt)){ markLatency('audioPlay'); } remoteOutputRafId=requestAnimationFrame(tick); }; tick(); }catch(err){ if(verboseDebug) log('diag','远端音频延迟监测不可用: '+err.message); } }
 
 // ---- Start (connect) ----
-async function start(){ try{ applyTaskConnectionState(getCurrentTaskType()); const connType=connTypeSelect?.value||'webrtc'; await validateRealtimeAuth(); sessionInfo=await createSession(); log('sys','会话创建成功'); if(connType==='webrtc'){ if(!sessionInfo?.client_secret?.value){ log('error','缺少 WebRTC 临时密钥'); return; } await startWebRTC(); } else { await startWebSocket(); } }catch(e){ log('error','创建会话失败: '+e.message); setStatus('创建失败'); } }
+async function start(){ try{ const task=getCurrentTaskType(); if(taskUsesAzureCognitive(task)){ setStatus('Azure认知服务'); log('sys','Azure认知服务任务不需要创建 Realtime 会话，直接使用麦克风或音频文件转写'); return; } applyTaskConnectionState(task); const connType=connTypeSelect?.value||'webrtc'; await validateRealtimeAuth(); sessionInfo=await createSession(); log('sys','会话创建成功'); if(connType==='webrtc'){ if(!sessionInfo?.client_secret?.value){ log('error','缺少 WebRTC 临时密钥'); return; } await startWebRTC(); } else { await startWebSocket(); } }catch(e){ log('error','创建会话失败: '+e.message); setStatus('创建失败'); } }
 
 // ---- WebSocket path builder (Azure OpenAI) ----
 let wsPreviewLock=false; // 自动回退后锁定 preview；若用户重新勾选 GA 则解除
@@ -398,7 +523,7 @@ function buildWebSocketProxyUrl(){
   const protocol=window.location.protocol==='https:'?'wss:':'ws:';
   const useV1=shouldUseGaWebSocket()?'1':'0';
   const params=new URLSearchParams({ model:deployment, use_v1:useV1, task:getCurrentTaskType() });
-  if(taskUsesInputLanguage() && normalizePayloadLanguage(getResolvedInputLanguage())) params.set('input_language', normalizePayloadLanguage(getResolvedInputLanguage()));
+  if(taskUsesInputLanguage() && getRealtimeInputLanguage()) params.set('input_language', getRealtimeInputLanguage());
   if(taskUsesTargetLanguage() && normalizePayloadLanguage(getResolvedTargetLanguage())) params.set('target_language', normalizePayloadLanguage(getResolvedTargetLanguage()));
   return `${protocol}//${window.location.host}/realtime-proxy?${params.toString()}`;
 }
@@ -866,8 +991,8 @@ function onDataChannelMessage(e){ try{ const msg=JSON.parse(e.data); const type=
 // ---- Mic handling (WebRTC already sending track) ----
 async function toggleMic(){ if(isRecording){ stopRecording(); return; } if(!audioStream){ audioStream=await navigator.mediaDevices.getUserMedia(buildMicCaptureConstraints()); if(pc){ audioStream.getAudioTracks().forEach(t=>pc.addTrack(t,audioStream)); } } // simple local RMS visualizer
   try{ audioCtxVis = audioCtxVis || new (window.AudioContext||window.webkitAudioContext)(); const src=audioCtxVis.createMediaStreamSource(audioStream); analyser=audioCtxVis.createAnalyser(); analyser.fftSize=256; src.connect(analyser); visualize(); }catch(_){ }
-  if(enableLocalStt.checked) startLocalSTT(); isRecording=true; micBtn.textContent='停止说话'; log('sys','麦克风已开启'); startLatencyTurn('voice'); }
-function stopRecording(){ markLatencyPoint('speechStop'); if(wsAudioProc){ stopWsMicStreaming(false); } if(audioStream){ audioStream.getTracks().forEach(t=>t.stop()); audioStream=null; } cancelAnimationFrame(rafId); if(sttActive) stopLocalSTT(); isRecording=false; micBtn.textContent='开始说话'; Array.from(wave.children).forEach(c=>{ c.style.height='4px'; c.classList.remove('active'); }); log('sys','麦克风已关闭'); }
+  startSelectedSTT(); isRecording=true; micBtn.textContent='停止说话'; log('sys','麦克风已开启'); startLatencyTurn('voice'); }
+function stopRecording(){ markLatencyPoint('speechStop'); if(wsAudioProc){ stopWsMicStreaming(false); } if(audioStream){ audioStream.getTracks().forEach(t=>t.stop()); audioStream=null; } cancelAnimationFrame(rafId); if(sttActive || activeSttProvider!=='none') stopSelectedSTT(); isRecording=false; micBtn.textContent='开始说话'; Array.from(wave.children).forEach(c=>{ c.style.height='4px'; c.classList.remove('active'); }); log('sys','麦克风已关闭'); }
 
 // ---- Text send ----
 // 兼容旧函数名（仍可能被外部脚本调用）
@@ -878,16 +1003,45 @@ function buildTranscriptionPreference(){ return null; }
 function applyTranscriptionPreference(target,{forceNullWhenDisabled}={}){ if(forceNullWhenDisabled){ /* no-op: 不发送该字段 */ } }
 function sendSessionUpdate(){ const target=(webrtcActive && dataChannel?.readyState==='open') ? dataChannel : ((wsActive && ws?.readyState===WebSocket.OPEN) ? ws : null); if(!target) return; const payload=buildRealtimeSessionUpdatePayload({ includeTools:taskUsesConversationLifecycle() }); log('sys','session.update payload: '+stringifyForLog(payload)); target.send(JSON.stringify(payload)); log('sys','已更新会话'); }
 
-function handleTaskTypeChanged(){ const task=getCurrentTaskType(); const configured=normalizeModelValue(window._cfg?.model || window._cfg?.deployment || ''); const selected=modelBelongsToTask(modelInput?.value, task) ? modelInput.value : (modelBelongsToTask(configured, task) ? configured : ''); applyTaskUiState({ selectedModel:selected, forceModel:true }); sendSessionUpdate(); }
+function handleTaskTypeChanged(){ const task=getCurrentTaskType(); if(isRecording) stopRecording(); if(taskUsesAzureCognitive(task) && (webrtcActive || wsActive)) disconnect(); const configured=normalizeModelValue(window._cfg?.model || window._cfg?.deployment || ''); const selected=modelBelongsToTask(modelInput?.value, task) ? modelInput.value : (modelBelongsToTask(configured, task) ? configured : ''); applyTaskUiState({ selectedModel:selected, forceModel:true }); if(taskUsesRealtime(task)) sendSessionUpdate(); }
 taskTypeInput?.addEventListener('change', handleTaskTypeChanged);
 modelInput?.addEventListener('change',()=>{ applyTaskUiState({ selectedModel:modelInput.value, forceModel:false }); sendSessionUpdate(); });
 [tempInput,maxTokensInput,voiceInput,systemPromptInput,enableNativeWebSearchInput,inputLanguageInput,targetLanguageInput].forEach(el=> el && el.addEventListener('change',()=>sendSessionUpdate()));
 [enableServerTurnInput,serverTurnThresholdInput,serverTurnSilenceMsInput].forEach(el=> el && el.addEventListener('change',()=>sendSessionUpdate()));
+azureOutputModeInput?.addEventListener('change',()=>{ applyTaskUiState({ selectedModel:modelInput?.value || '', forceModel:false }); if(isRecording && taskUsesAzureCognitive()){ stopSelectedSTT(); startSelectedSTT(); } });
+[inputLanguageInput,targetLanguageInput].forEach(el=> el && el.addEventListener('change',()=>{ if(isRecording && taskUsesAzureCognitive()){ stopSelectedSTT(); startSelectedSTT(); } }));
+sttProviderInput?.addEventListener('change',()=>{ updateSttProviderUiState(); if(isRecording){ stopSelectedSTT(); startSelectedSTT(); } });
+audioFileInput?.addEventListener('change',()=>updateAudioFileUiState());
+transcribeFileBtn?.addEventListener('click',()=>transcribeSelectedAudioFile());
 applyTaskUiState({ selectedModel:modelInput?.value || '', forceModel:false });
 
-// ---- Local STT (Web Speech) ----
-function startLocalSTT(){ const SR=window.SpeechRecognition||window.webkitSpeechRecognition; if(!SR){ log('error','浏览器不支持本地 STT'); return; } recognition=new SR(); recognition.lang='zh-CN'; recognition.continuous=true; recognition.interimResults=true; recognition.onstart=()=>{ sttActive=true; log('sys','本地转写启动'); }; recognition.onerror=e=>log('error','STT: '+e.error); recognition.onend=()=>{ sttActive=false; log('sys','本地转写结束'); if(isRecording && enableLocalStt.checked){ try{ recognition.start(); }catch(_){ } } }; recognition.onresult=(ev)=>{ let final=''; let interim=''; for(let i=ev.resultIndex;i<ev.results.length;i++){ const r=ev.results[i]; if(r.isFinal) final+=r[0].transcript; else interim+=r[0].transcript; } if(interim){ if(!recognition._interimDiv){ recognition._interimDiv=document.createElement('div'); recognition._interimDiv.className='msg'; recognition._interimDiv.innerHTML='<span class="role">转写:</span><span class="partial"></span>'; logEl.appendChild(recognition._interimDiv);} recognition._interimDiv.querySelector('.partial').textContent=interim; } if(final){ log('转写',final.trim()); if(recognition._interimDiv){ recognition._interimDiv.remove(); recognition._interimDiv=null; } if(autoSendStt.checked){ textInput.value=final.trim(); sendText(); } } }; try{ recognition.start(); }catch(_){ } }
-function stopLocalSTT(){ if(recognition){ try{ recognition.stop(); }catch(_){} } recognition=null; sttActive=false; }
+// ---- STT providers ----
+function showSttInterim(text){ const value=(text||'').toString(); if(!value) return; if(!sttInterimDiv){ sttInterimDiv=document.createElement('div'); sttInterimDiv.className='msg'; const role=document.createElement('span'); role.className='role'; role.textContent='转写:'; const partial=document.createElement('span'); partial.className='partial'; sttInterimDiv.appendChild(role); sttInterimDiv.appendChild(partial); logEl.appendChild(sttInterimDiv); } sttInterimDiv.querySelector('.partial').textContent=value; logEl.scrollTop=logEl.scrollHeight; }
+function clearSttInterim(){ if(sttInterimDiv){ sttInterimDiv.remove(); sttInterimDiv=null; } }
+function handleFinalSttText(text, role='转写'){ const final=(text||'').toString().trim(); if(!final) return; log(role,final); clearSttInterim(); if(autoSendStt.checked && taskUsesConversationControls()){ textInput.value=final; sendText(); } }
+function getCurrentSttInterim(){ return sttInterimDiv?.querySelector('.partial')?.textContent?.trim() || ''; }
+function startSelectedSTT(){ const provider=getSelectedSttProvider(); if(provider==='browser') startBrowserSTT(); else if(provider==='azure-cognitive') startAzureCognitiveSTT(); }
+function stopSelectedSTT(){ const provider=activeSttProvider; if(provider==='azure-cognitive') stopAzureCognitiveSTT(); else stopBrowserSTT(); activeSttProvider='none'; sttActive=false; clearSttInterim(); }
+function startBrowserSTT(){ const SR=window.SpeechRecognition||window.webkitSpeechRecognition; if(!SR){ log('error','浏览器不支持本地 STT'); return; } recognition=new SR(); recognition.lang=getBrowserSpeechLanguage(); recognition.continuous=true; recognition.interimResults=true; recognition.onstart=()=>{ sttActive=true; activeSttProvider='browser'; log('sys','浏览器本地转写启动'); }; recognition.onerror=e=>log('error','本地 STT: '+e.error); recognition.onend=()=>{ sttActive=false; log('sys','浏览器本地转写结束'); if(isRecording && getSelectedSttProvider()==='browser'){ try{ recognition.start(); }catch(_){ } } }; recognition.onresult=(ev)=>{ let final=''; let interim=''; for(let i=ev.resultIndex;i<ev.results.length;i++){ const r=ev.results[i]; if(r.isFinal) final+=r[0].transcript; else interim+=r[0].transcript; } if(interim) showSttInterim(interim); if(final) handleFinalSttText(final); }; try{ recognition.start(); }catch(_){ } }
+function stopBrowserSTT(){ if(recognition){ try{ recognition.stop(); }catch(_){} } recognition=null; }
+function normalizeAzureSpeechLanguage(value){ const lang=(value||'').toString().trim(); if(!lang || lang.toLowerCase()==='auto') return ''; return AZURE_SPEECH_LANGUAGE_MAP[lang] || lang; }
+function getBrowserSpeechLanguage(){ return normalizeAzureSpeechLanguage(getResolvedInputLanguage()) || 'zh-CN'; }
+function getAzureSpeechLanguage(tokenPayload={}){ return normalizeAzureSpeechLanguage(getResolvedInputLanguage()) || normalizeAzureSpeechLanguage(tokenPayload.language) || normalizeAzureSpeechLanguage(getAzureSpeechSettings().language) || 'zh-CN'; }
+function getAzureTargetLanguage(){ const selected=normalizePayloadLanguage(getResolvedTargetLanguage()); return selected || 'en'; }
+function isAzureSpeechEndOfStream(SpeechSDK, event){ const reason=event?.reason; const endOfStream=SpeechSDK?.CancellationReason?.EndOfStream; if(endOfStream!==undefined && reason===endOfStream) return true; const detail=(event?.errorDetails||'').toString().trim(); if(/EndOfStream|end of stream|EOF/i.test(detail)) return true; return !detail && String(reason)==='1'; }
+function getAzureSpeechCancelDetail(event){ return (event?.errorDetails || event?.errorCode || event?.reason || 'unknown').toString(); }
+function loadAzureSpeechSdk(){ if(window.SpeechSDK) return Promise.resolve(window.SpeechSDK); if(speechSdkLoadPromise) return speechSdkLoadPromise; speechSdkLoadPromise=new Promise((resolve,reject)=>{ const script=document.createElement('script'); script.src='https://aka.ms/csspeech/jsbrowserpackageraw'; script.onload=()=>window.SpeechSDK?resolve(window.SpeechSDK):reject(new Error('Azure Speech SDK 未加载')); script.onerror=()=>reject(new Error('Azure Speech SDK 加载失败')); document.head.appendChild(script); }); return speechSdkLoadPromise; }
+async function fetchAzureSpeechToken(){ const resp=await fetch('/api/speech-token',{ cache:'no-store' }); const data=await resp.json().catch(()=>({})); if(!resp.ok) throw new Error(data.detail || data.error || `HTTP ${resp.status}`); return data; }
+function createAzureRecognizer(SpeechSDK, tokenPayload, audioConfig){ const outputMode=getAzureOutputMode(); if(outputMode==='translation'){ const translationConfig=SpeechSDK.SpeechTranslationConfig.fromAuthorizationToken(tokenPayload.token, tokenPayload.region); translationConfig.speechRecognitionLanguage=getAzureSpeechLanguage(tokenPayload); translationConfig.addTargetLanguage(getAzureTargetLanguage()); return new SpeechSDK.TranslationRecognizer(translationConfig, audioConfig); } const speechConfigSdk=SpeechSDK.SpeechConfig.fromAuthorizationToken(tokenPayload.token, tokenPayload.region); speechConfigSdk.speechRecognitionLanguage=getAzureSpeechLanguage(tokenPayload); return new SpeechSDK.SpeechRecognizer(speechConfigSdk, audioConfig); }
+function getAzureResultText(SpeechSDK, result){ if(!result) return ''; if(getAzureOutputMode()==='translation'){ const lang=getAzureTargetLanguage(); return result.translations?.get?.(lang) || result.text || ''; } return result.text || ''; }
+async function startAzureCognitiveSTT(){ try{ const SpeechSDK=await loadAzureSpeechSdk(); const tokenPayload=await fetchAzureSpeechToken(); if(getSelectedSttProvider()!=='azure-cognitive') return; const audioConfig=SpeechSDK.AudioConfig.fromDefaultMicrophoneInput(); azureSpeechRecognizer=createAzureRecognizer(SpeechSDK, tokenPayload, audioConfig); azureSpeechRecognizer.recognizing=(_s,e)=>{ const text=getAzureResultText(SpeechSDK,e.result); if(text) showSttInterim(text); }; azureSpeechRecognizer.recognized=(_s,e)=>{ const text=getAzureResultText(SpeechSDK,e.result); if(text) handleFinalSttText(text, getAzureOutputMode()==='translation'?'翻译':'转写'); else if(e.result?.reason===SpeechSDK.ResultReason.NoMatch) log('warn','Azure认知服务未识别到语音'); }; azureSpeechRecognizer.canceled=(_s,e)=>{ if(isAzureSpeechEndOfStream(SpeechSDK,e)){ log('sys','Azure认知服务音频流结束'); } else { log('error','Azure认知服务转写取消: '+getAzureSpeechCancelDetail(e)); } sttActive=false; activeSttProvider='none'; clearSttInterim(); }; azureSpeechRecognizer.sessionStopped=()=>{ sttActive=false; log('sys','Azure认知服务转写结束'); if(isRecording && activeSttProvider==='azure-cognitive' && getSelectedSttProvider()==='azure-cognitive') startAzureCognitiveSTT(); }; azureSpeechRecognizer.startContinuousRecognitionAsync(()=>{ sttActive=true; activeSttProvider='azure-cognitive'; log('sys','Azure认知服务启动: '+(getAzureOutputMode()==='translation'?'翻译文本':'转写文本')); }, err=>{ log('error','Azure认知服务启动失败: '+err); sttActive=false; activeSttProvider='none'; }); }catch(err){ log('error','Azure认知服务不可用: '+err.message); } }
+function stopAzureCognitiveSTT(){ const recognizer=azureSpeechRecognizer; azureSpeechRecognizer=null; if(!recognizer) return; try{ recognizer.stopContinuousRecognitionAsync(()=>{ try{ recognizer.close(); }catch(_){} }, err=>{ log('error','停止 Azure认知服务转写失败: '+err); try{ recognizer.close(); }catch(_){} }); }catch(_){ try{ recognizer.close(); }catch(_){} } }
+async function transcribeSelectedAudioFile(){ const file=audioFileInput?.files?.[0]; if(!file){ log('warn','请先选择音频文件'); return; } if(!taskUsesAzureCognitive()){ log('warn','音频文件转写需要切换到 Azure认知服务任务'); return; } isFileTranscriptionActive=true; updateAudioFileUiState(); try{ const text=await transcribeAudioFileWithAzure(file); if(text){ log(getAzureOutputMode()==='translation'?'文件翻译':'文件转写', text); } else { log('warn','文件未识别到语音'); } }catch(err){ log('error','文件处理失败: '+err.message); } finally { isFileTranscriptionActive=false; clearSttInterim(); updateAudioFileUiState(); } }
+async function transcribeAudioFileWithAzure(file){ const SpeechSDK=await loadAzureSpeechSdk(); const tokenPayload=await fetchAzureSpeechToken(); const wavFile=await prepareAudioFileForAzure(file); const audioConfig=SpeechSDK.AudioConfig.fromWavFileInput(wavFile); const recognizer=createAzureRecognizer(SpeechSDK, tokenPayload, audioConfig); const segments=[]; return new Promise((resolve,reject)=>{ let settled=false; const finish=()=>{ if(settled) return; settled=true; try{ recognizer.close(); }catch(_){} resolve(segments.join('\n').trim()); }; recognizer.recognizing=(_s,e)=>{ const text=getAzureResultText(SpeechSDK,e.result); if(text) showSttInterim(`${file.name}: ${text}`); }; recognizer.recognized=(_s,e)=>{ const text=getAzureResultText(SpeechSDK,e.result); if(text){ segments.push(text.trim()); showSttInterim(`${file.name}: ${segments.join(' ')}`); } }; recognizer.canceled=(_s,e)=>{ if(isAzureSpeechEndOfStream(SpeechSDK,e)) finish(); else if(!settled){ settled=true; try{ recognizer.close(); }catch(_){} reject(new Error(getAzureSpeechCancelDetail(e))); } }; recognizer.sessionStopped=()=>finish(); recognizer.startContinuousRecognitionAsync(()=>{ log('sys','开始文件'+(getAzureOutputMode()==='translation'?'翻译':'转写')+': '+file.name); }, err=>{ if(!settled){ settled=true; try{ recognizer.close(); }catch(_){} reject(new Error(String(err))); } }); }); }
+async function prepareAudioFileForAzure(file){ try{ const wavBlob=await decodeAudioFileToWav(file); return new File([wavBlob], file.name.replace(/\.[^.]+$/,'')+'.wav', { type:'audio/wav' }); }catch(err){ if(/\.wav$/i.test(file.name) || /wav/i.test(file.type||'')) return file; throw err; } }
+async function decodeAudioFileToWav(file){ const AudioContextCtor=window.AudioContext||window.webkitAudioContext; if(!AudioContextCtor) throw new Error('浏览器不支持音频解码'); const ctx=new AudioContextCtor(); try{ const arrayBuffer=await file.arrayBuffer(); const audioBuffer=await ctx.decodeAudioData(arrayBuffer); return encodeAudioBufferToWav(audioBuffer, 16000); } finally { try{ await ctx.close(); }catch(_){} } }
+function encodeAudioBufferToWav(audioBuffer, sampleRate){ const duration=audioBuffer.duration || (audioBuffer.length/audioBuffer.sampleRate); const frameCount=Math.max(1, Math.ceil(duration*sampleRate)); const samples=new Int16Array(frameCount); const channelCount=audioBuffer.numberOfChannels; for(let i=0;i<frameCount;i++){ const sourceIndex=i*(audioBuffer.sampleRate/sampleRate); const i0=Math.floor(sourceIndex); const i1=Math.min(i0+1,audioBuffer.length-1); const frac=sourceIndex-i0; let sample=0; for(let ch=0; ch<channelCount; ch++){ const data=audioBuffer.getChannelData(ch); sample += (data[i0]||0)*(1-frac)+(data[i1]||0)*frac; } sample/=Math.max(1,channelCount); sample=Math.max(-1, Math.min(1, sample)); samples[i]=sample<0 ? sample*0x8000 : sample*0x7fff; } const buffer=new ArrayBuffer(44+samples.length*2); const view=new DataView(buffer); writeAscii(view,0,'RIFF'); view.setUint32(4,36+samples.length*2,true); writeAscii(view,8,'WAVE'); writeAscii(view,12,'fmt '); view.setUint32(16,16,true); view.setUint16(20,1,true); view.setUint16(22,1,true); view.setUint32(24,sampleRate,true); view.setUint32(28,sampleRate*2,true); view.setUint16(32,2,true); view.setUint16(34,16,true); writeAscii(view,36,'data'); view.setUint32(40,samples.length*2,true); for(let i=0;i<samples.length;i++) view.setInt16(44+i*2,samples[i],true); return new Blob([buffer], { type:'audio/wav' }); }
+function writeAscii(view, offset, value){ for(let i=0;i<value.length;i++) view.setUint8(offset+i, value.charCodeAt(i)); }
 
 // ---- Visualizer ----
 function visualize(){
@@ -1076,7 +1230,7 @@ document.getElementById('cancelRespBtn')?.addEventListener('click', cancelActive
 // 插话：取消后立即创建一个新的用户轮次（可带当前本地 STT 的临时文本，如果有）以便后续音频或文本继续
 function performInterject(){
   let interimText='';
-  try{ if(recognition && recognition._interimDiv){ interimText = recognition._interimDiv.querySelector('.partial')?.textContent?.trim() || ''; } }catch(_){ }
+  try{ interimText = getCurrentSttInterim(); }catch(_){ }
   const contentText = interimText ? `（插话）${interimText}` : '（插话开始）';
   const itemPayload={ type:'message', role:'user', content:[{ type:'input_text', text: contentText }] };
   try{
@@ -1096,7 +1250,9 @@ Object.defineProperty(window,'rtConn',{ get(){ return { dataChannel, webrtcActiv
 window.sendDiagText=function(t,{wantAudio=false}={}){ if(!t) return; if(!webrtcActive||dataChannel?.readyState!=='open') return; dataChannel.send(JSON.stringify({ type:'conversation.item.create', item:{ type:'message', role:'user', content:[{ type:'input_text', text:t }] } })); const respCreate={ type:'response.create', response:{} }; dataChannel.send(JSON.stringify(respCreate)); };
 window.sendDiagPing=function(){ if(!webrtcActive||dataChannel?.readyState!=='open') return; dataChannel.send(JSON.stringify({ type:'session.update', session:{} })); };
 window.printRtState=function(){ console.log('webrtcActive=',webrtcActive,'dcState=',dataChannel?.readyState,'partial=',dataChannel?._partial); };
-window.checkLocalSTT=function(){ const SR=window.SpeechRecognition||window.webkitSpeechRecognition; log('sys', SR? '本地 STT 可用':'本地 STT 不可用'); };
+window.checkLocalSTT=function(){ const SR=window.SpeechRecognition||window.webkitSpeechRecognition; log('sys', SR? '浏览器本地 STT 可用':'浏览器本地 STT 不可用'); };
+window.checkAzureCognitiveSTT=async function(){ try{ await loadAzureSpeechSdk(); await fetchAzureSpeechToken(); log('sys','Azure认知服务 STT 可用'); }catch(err){ log('error','Azure认知服务 STT 不可用: '+err.message); } };
+window.transcribeSelectedAudioFile=transcribeSelectedAudioFile;
 
 // Expose for console experimentation
 window.__WEbrtcAppVersion='webrtc-only-v1';

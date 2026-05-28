@@ -37,6 +37,17 @@
       "user_location": null
     }
   },
+  "speech": {
+    "provider": "none",
+    "region": "",
+    "authMode": "api-key",
+    "apiKey": "",
+    "apiKeyEnv": "AZURE_SPEECH_KEY",
+    "language": "zh-CN",
+    "authScope": "https://cognitiveservices.azure.com/.default",
+    "resourceId": "",
+    "managedIdentityClientId": ""
+  },
   "server": {
     "clientOrigin": "http://localhost:3000",
     "port": 3000

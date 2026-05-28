@@ -31,7 +31,6 @@ const REALTIME_MODEL_OPTIONS = Object.freeze([
   'gpt-realtime-1.5',
   'gpt-realtime-2',
   'gpt-realtime-translate',
-  'gpt-realtime-translation',
   'gpt-realtime-whisper'
 ]);
 const REALTIME_VOICE_OPTIONS = Object.freeze([
@@ -46,6 +45,8 @@ const REALTIME_VOICE_OPTIONS = Object.freeze([
 ]);
 const REALTIME_TASK_OPTIONS = Object.freeze(['conversation','transcription','translation']);
 let azureIdentityCredentialCache = { cacheKey:'', credential:null };
+const DEFAULT_SPEECH_KEY_ENV = 'AZURE_SPEECH_KEY';
+const DEFAULT_SPEECH_LANGUAGE = 'zh-CN';
 
 function defaultMcpConfig(){
   return {
@@ -403,8 +404,7 @@ function getManagedIdentityClientId(){
   return String(raw).trim();
 }
 
-function getAzureTokenCredential(){
-  const managedIdentityClientId=getManagedIdentityClientId();
+function getAzureTokenCredential(managedIdentityClientId=getManagedIdentityClientId()){
   const cacheKey=managedIdentityClientId||'__default__';
   if(azureIdentityCredentialCache.credential && azureIdentityCredentialCache.cacheKey===cacheKey){
     return azureIdentityCredentialCache.credential;
@@ -425,6 +425,70 @@ function resolveApiKeyValue(){
     }
   }
   return key;
+}
+
+function getSpeechRootConfig(){
+  const speech=cfg.speech && typeof cfg.speech==='object' && !Array.isArray(cfg.speech) ? cfg.speech : {};
+  const realtimeSpeech=cfg.realtime?.speech && typeof cfg.realtime.speech==='object' && !Array.isArray(cfg.realtime.speech) ? cfg.realtime.speech : {};
+  return { ...realtimeSpeech, ...speech };
+}
+
+function getAzureSpeechConfig(){
+  const speech=getSpeechRootConfig();
+  const nested=(speech.azureCognitive || speech.azure_cognitive || speech.azure || {});
+  const azure=nested && typeof nested==='object' && !Array.isArray(nested) ? nested : {};
+  const apiKeyEnv=String(speech.apiKeyEnv || azure.apiKeyEnv || DEFAULT_SPEECH_KEY_ENV).trim() || DEFAULT_SPEECH_KEY_ENV;
+  const authMode=normalizeAzureAuthMode(speech.authMode || azure.authMode || 'api-key');
+  const region=String(speech.region || azure.region || process.env.RT_SPEECH_REGION || process.env.AZURE_SPEECH_REGION || '').trim();
+  const language=String(speech.language || azure.language || process.env.RT_SPEECH_LANGUAGE || DEFAULT_SPEECH_LANGUAGE).trim() || DEFAULT_SPEECH_LANGUAGE;
+  const managedIdentityClientId=String(speech.managedIdentityClientId || azure.managedIdentityClientId || speech.clientId || azure.clientId || getManagedIdentityClientId() || '').trim();
+  const resourceId=String(speech.resourceId || azure.resourceId || process.env.RT_SPEECH_RESOURCE_ID || '').trim();
+  return {
+    provider:String(speech.provider || process.env.RT_SPEECH_PROVIDER || 'none').trim().toLowerCase(),
+    authMode,
+    region,
+    language,
+    apiKeyEnv,
+    apiKey:String(speech.apiKey || azure.apiKey || process.env.RT_SPEECH_API_KEY || process.env[apiKeyEnv] || '').trim(),
+    authScope:String(speech.authScope || azure.authScope || DEFAULT_AZURE_AUTH_SCOPE).trim() || DEFAULT_AZURE_AUTH_SCOPE,
+    managedIdentityClientId,
+    resourceId
+  };
+}
+
+function getSafeSpeechConfig(){
+  const speech=getAzureSpeechConfig();
+  const configured=Boolean(speech.region && (speech.apiKey || (speech.authMode==='managed-identity' && speech.resourceId)));
+  return {
+    provider:speech.provider,
+    azure_cognitive:{
+      enabled:configured,
+      configured,
+      region:speech.region,
+      region_configured:Boolean(speech.region),
+      auth_mode:speech.authMode,
+      api_key_env:speech.apiKeyEnv,
+      resource_id_configured:Boolean(speech.resourceId),
+      language:speech.language
+    }
+  };
+}
+
+async function createAzureSpeechToken(){
+  const speech=getAzureSpeechConfig();
+  if(!speech.region) throw new Error('Missing Azure Speech region. Set speech.region or RT_SPEECH_REGION.');
+  if(speech.authMode==='managed-identity'){
+    if(!speech.resourceId) throw new Error('Missing Azure Speech resourceId for managed identity auth. Set speech.resourceId or RT_SPEECH_RESOURCE_ID.');
+    const token=await getAzureTokenCredential(speech.managedIdentityClientId).getToken(speech.authScope);
+    if(!token?.token) throw new Error(`Failed to acquire Azure Speech bearer token for scope ${speech.authScope}`);
+    return { token:`aad#${speech.resourceId}#${token.token}`, region:speech.region, language:speech.language, auth_mode:'managed-identity', expires_on:token.expiresOnTimestamp || null };
+  }
+  if(!speech.apiKey) throw new Error(`Missing Azure Speech key. Set ${speech.apiKeyEnv} or speech.apiKey.`);
+  const tokenEndpoint=`https://${encodeURIComponent(speech.region)}.api.cognitive.microsoft.com/sts/v1.0/issueToken`;
+  const resp=await fetch(tokenEndpoint,{ method:'POST', headers:{ 'Ocp-Apim-Subscription-Key':speech.apiKey, 'Content-Length':'0' } });
+  const text=await resp.text();
+  if(!resp.ok) throw new Error(`Azure Speech token request failed: HTTP ${resp.status} ${text.slice(0,200)}`);
+  return { token:text, region:speech.region, language:speech.language, auth_mode:'api-key', expires_in:600 };
 }
 
 async function resolveAuthContext(){
@@ -487,6 +551,16 @@ async function validateRealtimeAuth(){
     const azure = rt.azure && typeof rt.azure==='object' && !Array.isArray(rt.azure) ? rt.azure : (rt.azure={});
     if(env.RT_AZURE_CLIENT_ID) azure.managedIdentityClientId=env.RT_AZURE_CLIENT_ID;
     if(env.RT_AZURE_AUTH_SCOPE) azure.authScope=env.RT_AZURE_AUTH_SCOPE;
+  }
+  if(env.RT_SPEECH_PROVIDER || env.RT_SPEECH_REGION || env.RT_SPEECH_KEY_ENV || env.RT_SPEECH_AUTH_MODE || env.RT_SPEECH_LANGUAGE || env.RT_SPEECH_API_KEY || env.RT_SPEECH_RESOURCE_ID){
+    const speech = cfg.speech && typeof cfg.speech==='object' && !Array.isArray(cfg.speech) ? cfg.speech : (cfg.speech={});
+    if(env.RT_SPEECH_PROVIDER) speech.provider=env.RT_SPEECH_PROVIDER;
+    if(env.RT_SPEECH_REGION) speech.region=env.RT_SPEECH_REGION;
+    if(env.RT_SPEECH_KEY_ENV) speech.apiKeyEnv=env.RT_SPEECH_KEY_ENV;
+    if(env.RT_SPEECH_AUTH_MODE) speech.authMode=env.RT_SPEECH_AUTH_MODE;
+    if(env.RT_SPEECH_LANGUAGE) speech.language=env.RT_SPEECH_LANGUAGE;
+    if(env.RT_SPEECH_API_KEY) speech.apiKey=env.RT_SPEECH_API_KEY;
+    if(env.RT_SPEECH_RESOURCE_ID) speech.resourceId=env.RT_SPEECH_RESOURCE_ID;
   }
   if(env.RT_TEMPERATURE){ const v=parseFloat(env.RT_TEMPERATURE); if(!Number.isNaN(v)) rt.temperature=v; }
   if(env.RT_MAX_TOKENS){ const v=parseInt(env.RT_MAX_TOKENS,10); if(!Number.isNaN(v)) rt.max_response_output_tokens=v; }
@@ -705,6 +779,7 @@ app.get('/api/realtime-config', (req,res)=>{
     speech_style_instructions:getSpeechStyleInstructions(),
     translation_instructions:getTranslationInstructions(),
     modalities:r.modalities,
+    speech:getSafeSpeechConfig(),
     web_search:getWebSearchConfig(),
     // input_audio_transcription removed
     vad: r.vad ? { enabled:r.vad.enabled, silence_ms:r.vad.silence_ms } : null,
@@ -712,6 +787,15 @@ app.get('/api/realtime-config', (req,res)=>{
     api_version: r.api_version || r.apiVersion
   };
   res.json(safe);
+});
+
+app.get('/api/speech-token', async (_req,res)=>{
+  try{
+    const token=await createAzureSpeechToken();
+    res.json(token);
+  }catch(err){
+    res.status(500).json({ error:'Failed to create Azure Speech token', detail:err.message, speech:getSafeSpeechConfig() });
+  }
 });
 
 app.get('/api/realtime-auth-validation', async (req,res)=>{

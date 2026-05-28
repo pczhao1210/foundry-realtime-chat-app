@@ -9,7 +9,7 @@
 - 文本输入/输出流式展示
 - 麦克风录音与实时音频播放
 - 简单的频谱/音量可视化
-- 实时对话、实时转写、实时翻译三种任务类型
+- 实时对话、实时转写、实时翻译、Azure 认知服务四种任务类型
 - 可在前端面板通过下拉选择模型和音色，并动态调整温度、Max Tokens
 - 原生 Web Search 与远程 MCP 工具配置
 
@@ -79,12 +79,24 @@ npm run dev
 - `provider` / `model` / `deployment` / `endpoint`
 - `authMode` (`api-key` or `managed-identity`) / `apiKey` / `apiKeyEnv` / `azure.authScope` / `azure.managedIdentityClientId`
 - `voice` / `modalities` / `temperature` / `max_response_output_tokens`
+- `speech`：Azure 认知服务转写配置，包含 `provider`, `region`, `authMode`, `apiKeyEnv`, `language`, `resourceId`
 - `web_search`：Foundry/OpenAI 原生 `web_search` hosted tool，默认关闭
 - `system_prompt`：Realtime instructions，默认按 Realtime prompting guide 拆成多个短段落
 - `speech_style_instructions`：实时对话的语音风格补充指令
 - `server.port` / `server.clientOrigin`
 
 修改配置后重启服务器生效。
+
+Azure 认知服务转写使用独立的 `speech` 配置，不复用 Realtime deployment。推荐把 Speech/Cognitive Services key 放在环境变量中：
+
+```bash
+export AZURE_SPEECH_KEY="..."
+RT_SPEECH_PROVIDER=azure-cognitive RT_SPEECH_REGION=eastus ./start.sh
+```
+
+前端“任务类型”选择“Azure认知服务”后，会调用 `/api/speech-token` 获取短期 token，再由 Azure Speech SDK 进行连续识别。该任务不创建 Realtime 会话，不支持 MCP/Web Search；输出可选“转写文本”或“翻译文本”，输入语言可保持自动，翻译文本时再选择目标语言。
+如果 `speech.authMode` 使用 `managed-identity`，还需要配置 Speech/Cognitive Services 资源 ID（`speech.resourceId` 或 `RT_SPEECH_RESOURCE_ID`），用于生成 Speech SDK 需要的 Entra token 格式。
+音频文件转写同样走 Azure Speech SDK：选择“Azure认知服务”任务后上传文件，浏览器会把支持的音频解码并转换成 WAV 后转写，不依赖 Realtime 连接。
 
 前端音色下拉内置 `alloy`、`ash`、`ballad`、`coral`、`echo`、`sage`、`shimmer`、`verse`。服务端会把本地配置中的自定义音色并入安全配置并校验前端传入值。
 
@@ -99,7 +111,7 @@ npm run dev
 
 - 实时对话：模型下拉使用 `gpt-realtime-1`、`gpt-realtime-1.5`、`gpt-realtime-2`。
 - 实时转写：模型下拉使用 `gpt-realtime-whisper`。
-- 实时翻译：模型下拉使用 `gpt-realtime-translate` 或 `gpt-realtime-translation`。
+- 实时翻译：模型下拉使用 `gpt-realtime-translate`。
 
 音色只在实时对话和实时翻译任务显示；输入语言只在转写/翻译显示，目标语言只在翻译显示。输入语言是能力提示，不是所有任务都会发送：转写任务可把它作为 `audio.input.transcription.language` 的可选提示；OpenAI 翻译通常自动识别源语言；Azure Realtime translations 当前拒绝 `session.audio.input.transcription.language`，所以界面会禁用该下拉并提示由服务自动识别。服务端会校验传入的模型/部署名和音色，避免手动输入拼写错误。
 

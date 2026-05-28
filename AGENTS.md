@@ -18,7 +18,7 @@
 - `realtime.authMode` is the server-side switch for Azure auth behavior. Keep `/api/realtime-session` compatible with both `api-key` and `managed-identity`, but do not extend `/api/realtime-ws-key` beyond its current dev-only API key scope unless the task explicitly requires it.
 - For Azure API key mode, use the `api-key` request header for server-side session creation. For managed identity/Entra mode, use `Authorization: Bearer <token>` from the server-side credential flow.
 - Keep provider branching centralized in the existing helpers (`isAzure()`, `resolveEndpoint()`, and auth construction) instead of scattering endpoint or header logic through the client.
-- Treat Azure `deployment` and realtime `model` as configurable values. Do not hardcode `gpt-realtime`; changes must remain compatible with `gpt-realtime-2` and `gpt-realtime-translation` as deployment/model names.
+- Treat Azure `deployment` and realtime `model` as configurable values. Do not hardcode `gpt-realtime`; changes must remain compatible with `gpt-realtime-2` and `gpt-realtime-translate` as deployment/model names.
 - Preserve the existing GA/preview path handling unless replacing it with a verified newer API contract. Azure GA currently uses `/openai/v1/realtime/sessions`; preview uses `/openai/realtimeapi/sessions` with `api-version`.
 - Be careful with fields that have caused `unknown_parameter` errors. The app currently suppresses model-side `input_audio_transcription` and turn detection payloads in some paths; re-enable only after checking the target model/API version.
 

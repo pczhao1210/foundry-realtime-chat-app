@@ -33,6 +33,12 @@ show_help() {
   --system-prompt <text>
   --web-search <true|false> 启用 Foundry/OpenAI 原生 web_search tool
   --web-search-domains <d>  逗号分隔的 allowed_domains
+  --speech-provider <name>  none | azure-cognitive
+  --speech-region <region> Azure Speech/Cognitive Services 区域
+  --speech-key-env <ENV>   Azure Speech key 环境变量名 (默认 AZURE_SPEECH_KEY)
+  --speech-auth-mode <mode> api-key | managed-identity
+  --speech-language <lang> Azure Speech 默认识别语言, 例如 zh-CN
+  --speech-resource-id <id> Azure Speech 资源 ID（managed identity 模式需要）
   --port <number>          覆盖 server.port
   --debug <true|false>
   --force-kill           若端口被占用，直接强制结束占用进程 (fallback)
@@ -42,6 +48,7 @@ show_help() {
   RT_PROVIDER, RT_AUTH_MODE, RT_MODEL, RT_DEPLOYMENT, RT_ENDPOINT, RT_API_VERSION, RT_KEY_ENV,
   RT_AZURE_CLIENT_ID, RT_AZURE_AUTH_SCOPE, RT_VOICE, RT_MODALITIES,
   RT_TEMPERATURE, RT_MAX_TOKENS, RT_SYSTEM_PROMPT, RT_WEB_SEARCH, RT_WEB_SEARCH_ALLOWED_DOMAINS,
+  RT_SPEECH_PROVIDER, RT_SPEECH_REGION, RT_SPEECH_KEY_ENV, RT_SPEECH_AUTH_MODE, RT_SPEECH_LANGUAGE, RT_SPEECH_RESOURCE_ID,
   RT_PORT, RT_DEBUG
 
 示例：
@@ -70,6 +77,12 @@ while [[ $# -gt 0 ]]; do
     --system-prompt)  export RT_SYSTEM_PROMPT="$2"; shift 2;;
     --web-search)     export RT_WEB_SEARCH="$2"; shift 2;;
     --web-search-domains) export RT_WEB_SEARCH_ALLOWED_DOMAINS="$2"; shift 2;;
+    --speech-provider) export RT_SPEECH_PROVIDER="$2"; shift 2;;
+    --speech-region)  export RT_SPEECH_REGION="$2"; shift 2;;
+    --speech-key-env) export RT_SPEECH_KEY_ENV="$2"; shift 2;;
+    --speech-auth-mode) export RT_SPEECH_AUTH_MODE="$2"; shift 2;;
+    --speech-language) export RT_SPEECH_LANGUAGE="$2"; shift 2;;
+    --speech-resource-id) export RT_SPEECH_RESOURCE_ID="$2"; shift 2;;
     --port)           export RT_PORT="$2"; shift 2;;
     --debug)          export RT_DEBUG="$2"; shift 2;;
   --force-kill)     export RT_FORCE_KILL=1; shift 1;;
